@@ -1,0 +1,17 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "macdash",
+  "description": "MacBook health dashboard + alerts, readable by Claude.",
+  "owner": {
+    "name": "Ansh Rajput",
+    "url": "https://github.com/AnshRajput"
+  },
+  "plugins": [
+    {
+      "name": "macdash",
+      "description": "Live Mac RAM/CPU/thermal/battery/process telemetry for Claude, plus a local dashboard and low-battery / Mac-struggling alerts.",
+      "source": "./",
+      "category": "productivity"
+    }
+  ]
+}
