@@ -39,6 +39,10 @@ Key fields:
 - `procs[]` lists processes with pid, name, mem (MB, the real footprint including compressed memory), cpu %, etime, cmd and app.
 - `apps[]` is the same data grouped by app.
 - `alerts[]` holds recent alerts.
+- `net` has `in_bps` / `out_bps` (bytes/s over the physical interfaces). `battery.health` has `cycle_count`, `condition` and `max_capacity_pct` (null if unavailable).
+- `ports[]` lists listening TCP ports (port, pid, name, cmd).
+- `suggestions[]` are ready-made cleanup hints (id, severity, title, detail, pids, mem_mb, `command`). macdash never runs the command. Start from these, then confirm with the user. `leaks[]` lists processes whose memory grew sharply in the last 30 min.
+- `config` is the effective alert thresholds. `GET /api/history` returns the last 2h of samples (every ~10s) for trends: cpu, mem_used_pct, swap_pct, pressure_level, battery_pct, net_in, net_out.
 
 ## 3. Report to the user
 
@@ -55,6 +59,8 @@ Each etime value shows how long a process has been running; use it to spot stale
 
 **Never kill a process without the user's explicit confirmation.** Propose exact commands (`kill <pid>`, `xcrun simctl shutdown all`, `colima stop`, `pkill -f GradleDaemon`) and wait for a yes. Don't kill Claude Code sessions or system processes.
 
-Point the user to `http://127.0.0.1:7777` for the live view. The background monitor posts macOS notifications when battery is under 20% and not charging, when memory pressure is warn or critical, when swap is over 75% full, when thermal state is serious or worse, or when CPU stays over 90% for about 90s.
+Prefer `suggestions[]` over guessing: each already excludes Claude Code and system processes.
+
+Point the user to `http://127.0.0.1:7777` for the live view. The background monitor posts macOS notifications when battery is under 20% (critical under 10%) and not charging, when disk free space is low, when a process leaks memory, when memory pressure is warn or critical, when swap is over 75% full, when thermal state is serious or worse, or when CPU stays over 90% for about 90s.
 
 Uninstall: `sh "<skill base dir>/../../uninstall.sh"`.
