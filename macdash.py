@@ -803,13 +803,23 @@ def scan_storage(home=None, roots=None, now=None, du=None, publish=None):
                 "top_home": top_home, "skipped": skipped}
     if publish:
         publish(payload())  # items are final here; the slow whole-home du below only adds top_home
-    try:
-        out = subprocess.run(["nice", "-n", "19", "du", "-d1", "-kx", home], capture_output=True, text=True, timeout=STO_HOME_TIMEOUT).stdout
-        rows = [ln.split("\t", 1) for ln in out.splitlines() if "\t" in ln]
-        top_home = sorted(({"path": p, "bytes": int(k) * 1024} for k, p in rows if k.isdigit() and p.rstrip("/") != home.rstrip("/")),
-                          key=lambda r: -r["bytes"])[:15]
-    except (subprocess.TimeoutExpired, OSError):
-        skipped.append(home)
+    # per-child du so one slow folder (e.g. ~/Library) can't discard every other result
+    deadline, measured = time.time() + STO_HOME_TIMEOUT, []
+    for e in sorted(_entries(home), key=lambda e: e.name):
+        left = deadline - time.time()
+        if left <= 5:
+            skipped.append(e.path)
+            continue
+        if not _isdir(e):
+            continue
+        try:
+            b = du_bytes(e.path, timeout=min(STO_TIMEOUT * 2, left))
+        except subprocess.TimeoutExpired:
+            skipped.append(e.path)
+            continue
+        if b:
+            measured.append({"path": e.path, "bytes": b})
+    top_home = sorted(measured, key=lambda r: -r["bytes"])[:15]
     return payload()
 
 
