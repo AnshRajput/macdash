@@ -4,6 +4,7 @@
 
 - Cleanup suggestions (stale dev servers, simulators, VMs, Gradle daemons, hung `flutter_tester`/`git`, duplicate Dart analysis servers). Commands are shown, never run.
 - Memory leak watch and alert.
+- Uptime shown as `46M` / `3H 12M` / `2D 4H 1M` instead of an ambiguous `00:00:46`.
 - `/api/history`: 2h of CPU, memory, swap, pressure, battery and network samples; TRENDS sparklines in the dashboard.
 - Listening ports, network throughput and battery health (cycles, condition, max capacity).
 - Low-disk and critical-battery alerts.
