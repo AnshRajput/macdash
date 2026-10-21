@@ -589,7 +589,7 @@ CATALOG = [
     ("pnpm", "dev-cache", "pnpm store", ["~/Library/pnpm/store", "~/.local/share/pnpm/store"], "safe", "pnpm store prune", "Removes only unreferenced packages."),
     ("yarn", "dev-cache", "Yarn cache", ["~/Library/Caches/Yarn", "~/.cache/yarn"], "safe", "yarn cache clean", ""),
     ("pip", "dev-cache", "pip cache", ["~/Library/Caches/pip", "~/.cache/pip"], "safe", "pip cache purge", ""),
-    ("pub", "dev-cache", "Dart/Flutter pub cache", ["~/.pub-cache"], "safe", "dart pub cache clean", "Packages re-download on next pub get."),
+    ("pub", "dev-cache", "Dart/Flutter pub cache", ["~/.pub-cache"], "safe", "dart pub cache clean", "Packages re-download on next pub get, but globally activated tools (fvm, melos, flutterfire) are removed and must be re-activated."),
     ("cocoapods", "dev-cache", "CocoaPods cache", ["~/Library/Caches/CocoaPods"], "safe", "pod cache clean --all", ""),
     ("homebrew", "dev-cache", "Homebrew downloads", ["~/Library/Caches/Homebrew"], "safe", "brew cleanup --prune=all", ""),
     ("dot-cache", "cache", "~/.cache", ["~/.cache"], "safe", "rm -rf ~/.cache/*", "Per-tool caches."),
@@ -614,7 +614,7 @@ ARTIFACTS = {
     "Pods": ("Podfile", "safe", "rm -rf {p}", "pod install recreates it."),
     ".gradle": (("build.gradle", "build.gradle.kts", "settings.gradle", "settings.gradle.kts"), "safe", "rm -rf {p}", "Project Gradle cache."),
     "target": ("Cargo.toml", "safe", "cd {d} && cargo clean", "Rust build output."),
-    "build": (("pubspec.yaml", "package.json", "build.gradle", "build.gradle.kts", "settings.gradle"), "safe", "rm -rf {p}", "Build output."),
+    "build": (("pubspec.yaml", "package.json", "build.gradle", "build.gradle.kts", "settings.gradle"), "review", "rm -rf {p}", "Usually build output, but confirm it is ignored by version control before deleting."),
     ".venv": (None, "review", "rm -rf {p}", "Python virtualenv: recreate with python3 -m venv and reinstall."),
 }
 
@@ -769,8 +769,8 @@ def scan_storage(home=None, roots=None, now=None, du=None, publish=None):
         add(id, cat, label, shown or paths[0], total, safety, cmd, note)
     inst = downloads_installers(home, now)
     add("downloads-installers", "downloads", "Old installers in Downloads (%d)" % inst[1], os.path.join(home, "Downloads"), inst[0], "review",
-        "find ~/Downloads -maxdepth 1 \\( -name '*.dmg' -o -name '*.pkg' -o -name '*.zip' -o -name '*.xip' -o -name '*.ipa' -o -name '*.apk' \\) -mtime +7 -ls",
-        "Older than 7 days. Review the list; append -delete to remove them.")
+        "find ~/Downloads -maxdepth 1 \\( -iname '*.dmg' -o -iname '*.pkg' -o -iname '*.zip' -o -iname '*.xip' -o -iname '*.ipa' -o -iname '*.apk' \\) -mtime +7 -ls",
+        "Older than 7 days. Review the list and delete files individually (zip/apk may be your data).")
     swap = swap_files_bytes()
     add("vm-swap", "system", "VM volume (swap files, sleepimage)", "/System/Volumes/VM", swap, "keep", "-", "Shrinks after a reboot. Not user-deletable.")
     proj = []
@@ -781,8 +781,8 @@ def scan_storage(home=None, roots=None, now=None, du=None, publish=None):
         pid = "proj-" + hashlib.sha1(f["path"].encode()).hexdigest()[:10]
         if f["kind"] == "worktree":
             proj.append((pid, "worktree", "Agent worktree " + f["name"], f["path"], b, "review",
-                         "git -C %s worktree remove --force %s" % (q(f["repo"]), q(os.path.relpath(f["path"], f["repo"]))),
-                         "Check for uncommitted work and unpushed branches first."))
+                         "git -C %s worktree remove %s" % (q(f["repo"]), q(os.path.relpath(f["path"], f["repo"]))),
+                         "Check for unpushed branches first. Dirty worktrees are refused; add --force only if you accept losing uncommitted changes."))
         else:
             _, safety, cmd, note = ARTIFACTS[f["kind"]]
             if f["kind"] == "build" and os.path.exists(os.path.join(f["repo"], "pubspec.yaml")):
@@ -903,6 +903,8 @@ class H(BaseHTTPRequestHandler):
         path = self.path.split("?")[0]
         if path not in ("/", "/api/stats", "/api/history", "/api/storage", "/api/storage/rescan"):
             return self.send_error(404)
+        if path == "/api/storage/rescan" and self.headers.get("Sec-Fetch-Site", "same-origin") not in ("same-origin", "none"):
+            return self.send_error(403)  # cross-site page firing a scan; curl sends no such header
         touch()
         if path == "/api/storage":
             return self.reply(200, json.dumps(storage_payload()).encode(), "application/json")
