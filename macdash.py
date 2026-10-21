@@ -12,7 +12,7 @@ except ValueError:
 HERE = os.path.dirname(os.path.abspath(__file__))
 CHECK_EVERY, CACHE_TTL = 30, 5
 FAST, SLOW, ACTIVE_FOR = 3, 30, 60  # refresh seconds while viewed / idle, and the "viewed" window
-HIST_EVERY, HIST_MAX = 9, 720      # a point every ~10s (3s ticks), 2h
+HIST_EVERY, HIST_MAX = 9, 720      # a point every ~10s while viewed (30s idle), 720 points
 PID_EVERY, PID_KEEP, LEAK_WINDOW, LEAK_MIN_SPAN = 60, 3600, 1800, 600
 THERMAL = ["nominal", "fair", "serious", "critical"]
 PRESSURE = {1: "normal", 2: "warn", 4: "critical"}
@@ -53,7 +53,7 @@ def load_config(path=None):
         if isinstance(d, bool):
             ok = isinstance(v, bool)
         else:
-            ok = isinstance(v, (int, float)) and not isinstance(v, bool) and v >= 0 and v == v
+            ok = isinstance(v, (int, float)) and not isinstance(v, bool) and 0 < v <= (100 if k.endswith("_pct") or k.startswith("battery_") else 1e9)
         if ok:
             cfg[k] = v
     cfg["cpu_checks"] = max(1, int(cfg["cpu_checks"]))
@@ -209,6 +209,11 @@ def sysint(name, default=0):
         return default
 
 
+def hwint(name, default=0):
+    """Constant hardware values: read once, cached for the run."""
+    return cached("hw:" + name, lambda: sysint(name, default), 10 ** 9)
+
+
 def get_thermal():
     out = sh(["osascript", "-l", "JavaScript", "-e",
               'ObjC.import("Foundation"); $.NSProcessInfo.processInfo.thermalState']).strip()
@@ -217,7 +222,7 @@ def get_thermal():
 
 
 def get_mem():
-    total = sysint("hw.memsize")
+    total = hwint("hw.memsize")
     d = parse_vmstat(sh(["vm_stat"]), total)
     lvl = sysint("kern.memorystatus_vm_pressure_level", 1)
     d["pressure_level"], d["pressure"] = lvl, PRESSURE.get(lvl, "normal")
@@ -285,13 +290,15 @@ def update_pidhist(hist, plist, now):
     for pid, p in plist.items():
         if p["mem"] > 0:
             h = hist.setdefault(pid, [])
+            if h and p["etime_s"] + 120 < now - h[0][0]:
+                h.clear()  # pid reused by a younger process
             h.append((now, p["mem"]))
             while h and now - h[0][0] > PID_KEEP:
                 h.pop(0)
 
 
 # Never suggest touching these (Claude Code, window server, kernel, launchd, system daemons).
-PROTECTED = re.compile(r"claude|WindowServer|kernel_task|(?:^|/)launchd\b|^/System/|^/usr/(?:libexec|sbin)/", re.I)
+PROTECTED = re.compile(r"claude|WindowServer|kernel_task|(?:^|/)launchd\b|^/System/(?!.*Virtualization)|^/usr/(?:libexec|sbin)/", re.I)
 DEV = re.compile(r"next-server|\bvite\b|webpack|\bnode\b.*\bdev\b")
 VM = re.compile(r"com\.apple\.Virtualization\.VirtualMachine|qemu-system|colima|limactl|com\.docker|orbstack", re.I)
 GIT = re.compile(r"(?:^|/)git\s+(?:-\S+\s+)*(?:pack-objects|push|fetch)\b")
@@ -312,7 +319,7 @@ def detect_leaks(hist, plist, now, leak_mb):
 
 
 def vm_owner(cmds):
-    for pat, owner in (("orbstack", "OrbStack"), ("colima", "Colima"), ("lima", "Lima"), ("docker", "Docker Desktop"),
+    for pat, owner in (("-avd", "Android emulator"), ("orbstack", "OrbStack"), ("colima", "Colima"), ("lima", "Lima"), ("docker", "Docker Desktop"),
                        ("/utm.app", "UTM"), ("qemu", "QEMU"), ("parallels", "Parallels")):
         if any(pat in c.lower() for c in cmds):
             return owner
@@ -336,14 +343,25 @@ def suggest(plist, sims, leaks, cfg=None):
     if sims:
         add("ios-simulators", "warn", "%d iOS simulator%s booted" % (len(sims), "s" * (len(sims) > 1)),
             ", ".join(sims), [], "xcrun simctl shutdown all")
-    vms = [p for p in ps if VM.search(p["cmd"])]
-    if vms:
-        owner = vm_owner([p["cmd"] for p in vms])
-        cmd = {"Colima": "colima stop", "OrbStack": "orbctl stop", "Docker Desktop": "osascript -e 'quit app \"Docker\"'"}.get(
-            owner, "ps -o pid,etime,command -p " + ",".join(str(p["pid"]) for p in vms))
-        mem = sum(p["mem"] for p in vms)
-        add("vms", "warn" if mem > 2048 else "info", "Virtual machine running" + (" (%s)" % owner if owner else ""),
-            "%d process%s%s" % (len(vms), "es" * (len(vms) > 1), "" if owner else ", owner not detected"), vms, cmd)
+    vms = [p for p in plist.values() if VM.search(p["cmd"]) and not re.search(r"claude|launchd", p["cmd"], re.I)]
+    groups = {}
+    for p in vms:
+        groups.setdefault(vm_owner([p["cmd"]]), []).append(p)
+    orphans = groups.pop(None, [])  # e.g. Virtualization.framework VM: belongs to the single framework-based owner, if any
+    fw = [o for o in groups if o not in ("Android emulator", "QEMU")]
+    if orphans and len(fw) == 1:
+        groups[fw[0]] += orphans
+        orphans = []
+    if orphans:
+        groups[None] = orphans
+    for owner, g in groups.items():
+        cmd = {"Colima": "colima stop", "OrbStack": "orbctl stop", "Android emulator": "adb emu kill",
+               "Docker Desktop": "osascript -e 'quit app \"Docker\"'"}.get(
+            owner, "ps -o pid,etime,command -p " + ",".join(str(p["pid"]) for p in g))
+        mem = sum(p["mem"] for p in g)
+        add("vms" if len(groups) == 1 else "vms-" + re.sub(r"\W+", "", owner or "unknown").lower(),
+            "warn" if mem > 2048 else "info", "Virtual machine running" + (" (%s)" % owner if owner else ""),
+            "%d process%s%s" % (len(g), "es" * (len(g) > 1), "" if owner else ", owner not detected"), g, cmd)
     gr = [p for p in ps if "GradleDaemon" in p["cmd"] and "java" in p["cmd"]]
     if gr:
         add("gradle", "info", "%d Gradle daemon%s" % (len(gr), "s" * (len(gr) > 1)),
@@ -354,10 +372,10 @@ def suggest(plist, sims, leaks, cfg=None):
     git = [p for p in ps if GIT.search(p["cmd"]) and p["etime_s"] > 1800]
     if git:
         add("git-stuck", "warn", "git running over 30 min", ", ".join(sorted({p["cmd"][:60] for p in git})), git, kill(git))
-    dls = sorted((p for p in ps if DARTLS.search(p["cmd"])), key=lambda p: p["etime_s"])
+    dls = sorted((p for p in ps if DARTLS.search(p["cmd"])), key=lambda p: -p["mem"])
     if len(dls) > 1:
         add("dart-analysis", "info", "%d Dart analysis servers" % len(dls),
-            "Usually one per editor window; extras are leftovers", dls, kill(dls[1:]))
+            "Usually one per editor window; command keeps the biggest (likely busiest), check the others first", dls, kill(dls[1:]))
     for l in leaks:
         if l["pid"] not in plist or PROTECTED.search(plist[l["pid"]]["cmd"]):
             continue
@@ -369,7 +387,7 @@ def suggest(plist, sims, leaks, cfg=None):
 
 def collect():
     now = time.time()
-    ncpu = sysint("hw.ncpu", 1)
+    ncpu = hwint("hw.ncpu", 1)
     pr = cached("procs", get_procs)
     load = [float(x) for x in re.findall(r"[\d.]+", sh(["sysctl", "-n", "vm.loadavg"]))[:3]]
     bt = re.search(r"sec = (\d+)", sh(["sysctl", "-n", "kern.boottime"]))
@@ -393,7 +411,7 @@ def collect():
         "disk": {"total": du.total, "free": du.free},
         "net": get_net(now),
         "uptime": int(now - int(bt.group(1))) if bt else None,
-        "os": cached("os", lambda: sh(["sw_vers", "-productVersion"]).strip()),
+        "os": cached("os", lambda: sh(["sw_vers", "-productVersion"]).strip(), 86400),
         "procs": pr["procs"], "apps": pr["apps"],
         "ports": cached("ports", lambda: parse_lsof(sh(["lsof", "-nP", "-iTCP", "-sTCP:LISTEN"], 10), pr["ps"]), 15),
         "leaks": leaks,

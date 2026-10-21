@@ -44,7 +44,7 @@ Then just ask: *"why is my Mac lagging?"*, *"what's eating my RAM?"*, or *"what'
 | Network | Live in/out bytes per second (API) |
 | Listening ports | Every TCP listener with its pid and command (API) |
 | Cleanup suggestions | Stale dev servers, booted simulators, VMs, Gradle daemons, hung `flutter_tester`/`git`, duplicate Dart analysis servers, memory leaks, each with a command to review and run yourself (API) |
-| History | Last 2h of CPU, memory, swap, pressure, battery and network samples (API) |
+| History | Last 720 samples (about 2h while viewed, longer idle) of CPU, memory, swap, pressure, battery and network samples (API) |
 | Alerts | The last 50 alerts |
 | Tasks running | Sortable, filterable process table (memory, CPU, uptime, full command) with a group-by-app toggle |
 

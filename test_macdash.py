@@ -27,7 +27,7 @@ PID    MEM    %CPU TIME     COMMAND
 592    512K   0.0  00:00.00 ControlCe
 """
 PS = """    1   0.8 25:35  14432 /sbin/launchd
-21791   0.0 12:30  11568 /opt/homebrew/bin/limactl hostagent --pidfile /Users/ansh/.colima/_lima/colima/ha.pid
+21791   0.0 12:30  11568 /opt/homebrew/bin/limactl hostagent --pidfile /Users/me/.colima/_lima/colima/ha.pid
 39310   2.5 1-02:37:05  3408 /Applications/Xcode.app/Contents/Developer/usr/bin/git clone -q --depth 1 https://github.com/x/y
 garbage line
   77   abc 00:10 100 /bad/cpu column
@@ -41,11 +41,11 @@ en5*       1500  <Link#12>                          10     0       1000       20
 utun3      1380  <Link#13>                          10     0       9999       20     0       9999     0
 """
 LSOF = """COMMAND     PID USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
-ControlCe   592 ansh   10u  IPv4 0x617c06968ef69888      0t0  TCP *:7000 (LISTEN)
-ControlCe   592 ansh   11u  IPv6 0x1cfcc087598a5aad      0t0  TCP *:7000 (LISTEN)
-postgres    721 ansh    8u  IPv4 0x93e021af5086e9fb      0t0  TCP 127.0.0.1:5432 (LISTEN)
-Google\\x20Chrome  800 ansh  9u IPv6 0x1 0t0 TCP [::1]:9222 (LISTEN)
-node        900 ansh   22u  IPv4 0x2      0t0  TCP 127.0.0.1:3000 (ESTABLISHED)
+ControlCe   592 user   10u  IPv4 0x617c06968ef69888      0t0  TCP *:7000 (LISTEN)
+ControlCe   592 user   11u  IPv6 0x1cfcc087598a5aad      0t0  TCP *:7000 (LISTEN)
+postgres    721 user    8u  IPv4 0x93e021af5086e9fb      0t0  TCP 127.0.0.1:5432 (LISTEN)
+Google\\x20Chrome  800 user  9u IPv6 0x1 0t0 TCP [::1]:9222 (LISTEN)
+node        900 user   22u  IPv4 0x2      0t0  TCP 127.0.0.1:3000 (ESTABLISHED)
 """
 SIMCTL = """== Devices ==
 -- iOS 26.5 --
@@ -182,7 +182,8 @@ class Config(unittest.TestCase):
         c = self.cfg('{"swap_pct": 50, "notify": false, "cpu_pct": "high", "leak_mb": -5, "cpu_checks": 0, "extra": 1}')
         self.assertEqual((c["swap_pct"], c["notify"]), (50, False))
         self.assertEqual((c["cpu_pct"], c["leak_mb"]), (90, 500))  # wrong type / negative -> default
-        self.assertEqual(c["cpu_checks"], 1)  # clamped
+        self.assertEqual(c["cpu_checks"], 3)  # zero -> default
+        self.assertEqual(self.cfg('{"cpu_pct": 1000}')["cpu_pct"], 90)  # out of range -> default
         self.assertNotIn("extra", c)
         self.assertEqual(self.cfg('{"notify": 1}')["notify"], True)  # ints are not bools
 
@@ -324,7 +325,10 @@ class Suggestions(unittest.TestCase):
                       proc(2, "/System/Library/Frameworks/Virtualization.framework/x/com.apple.Virtualization.VirtualMachine", 5, 100)])
         v = r["vms"]
         self.assertIn("Colima", v["title"])
-        self.assertEqual((v["command"], v["severity"], v["pids"]), ("colima stop", "warn", [1]))  # /System/ is protected
+        self.assertEqual((v["command"], v["severity"], v["pids"]), ("colima stop", "warn", [1, 2]))  # VM joins its owner
+        r = self.ids([proc(1, "/opt/homebrew/bin/limactl hostagent --pidfile /x/colima/ha.pid", 5, 100),
+                      proc(3, "qemu-system-aarch64-headless -avd Pixel", 5, 6000)])
+        self.assertEqual((r["vms-colima"]["pids"], r["vms-androidemulator"]["command"]), ([1], "adb emu kill"))
         u = self.ids([proc(9, "/Users/x/bin/qemu-system-aarch64 -m 4G", 5, 500)])["vms"]
         self.assertIn("QEMU", u["title"]); self.assertEqual(u["severity"], "info")
         o = self.ids([proc(9, "/Applications/Foo.app/Contents/MacOS/com.apple.Virtualization.VirtualMachine", 5, 500)])["vms"]
@@ -336,13 +340,13 @@ class Suggestions(unittest.TestCase):
                       proc(2, "/x/flutter_tester --vm-service", 7200), proc(3, "/x/flutter_tester", 100),
                       proc(4, "/usr/bin/git pack-objects --stdout", 2000), proc(5, "/usr/bin/git push origin", 10),
                       proc(6, "/usr/bin/git status", 5000),
-                      proc(7, "/x/dart language-server --protocol=lsp", 500), proc(8, "/x/dart language-server", 100),
+                      proc(7, "/x/dart language-server --protocol=lsp", 500, 900), proc(8, "/x/dart language-server", 100),
                       proc(9, "/x/dart language-server", 900)])
         self.assertEqual(r["gradle"]["command"], "pkill -f GradleDaemon")
         self.assertEqual(r["flutter-tester"]["pids"], [2])
         self.assertEqual(r["git-stuck"]["pids"], [4])
         self.assertEqual(r["dart-analysis"]["pids"], [7, 8, 9])
-        self.assertEqual(r["dart-analysis"]["command"], "kill 7 9")  # keeps the newest (pid 8, etime 100)
+        self.assertEqual(r["dart-analysis"]["command"], "kill 8 9")  # keeps the biggest (pid 7)
         self.assertNotIn("dart-analysis", self.ids([proc(7, "/x/dart language-server")]))
 
     def test_protected_never_suggested(self):

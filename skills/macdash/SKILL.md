@@ -44,7 +44,7 @@ Key fields:
 - `suggestions[]` are ready-made cleanup hints (id, severity, title, detail, pids, mem_mb, `command`). macdash never runs the command. Start from these, then confirm with the user. `leaks[]` lists processes whose memory grew sharply in the last 30 min.
 - `leaks[]` entries are `{pid, name, from_mb, to_mb}`.
 - `config` is the effective alert thresholds (battery_low, battery_critical, swap_pct, cpu_pct, cpu_checks, disk_free_gb, cooldown_min, notify, leak_mb). `error` is null unless collection is failing.
-- `GET /api/history` returns `{interval_s, max_points, points[]}`: up to 720 samples (about 2h, one every ~10s) of `t` (epoch s), `cpu`, `mem_used_pct`, `swap_pct`, `pressure_level`, `battery_pct`, `net_in`, `net_out`.
+- `GET /api/history` returns `{interval_s, max_points, points[]}`: up to 720 samples (one every ~10s while viewed, ~30s idle) of `t` (epoch s), `cpu`, `mem_used_pct`, `swap_pct`, `pressure_level`, `battery_pct`, `net_in`, `net_out`.
 
 ### How to use the new fields
 
