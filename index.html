@@ -67,6 +67,10 @@ h2::before{content:"[ "}h2::after{content:" ]"}h2 span{float:right;font-weight:4
 .sto-c{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:14px 0 10px}
 .sto-c .sp-l{flex:1 1 200px;color:var(--dim);text-align:right;padding-left:6px}
 #sto-list{max-height:560px;overflow:auto;border:1px solid var(--line)}
+.sto-th{font:700 11px/1 var(--mono);letter-spacing:.14em;margin:18px 0 8px}
+#sto-home div{display:grid;grid-template-columns:minmax(0,1fr) 90px minmax(60px,30%);gap:12px;align-items:center;padding:5px 0;border-top:1px solid var(--line);text-transform:none}
+#sto-home div:first-child{border-top:0}#sto-home span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}#sto-home b{text-align:right;font-weight:700}
+#sto-home i{display:block;height:6px;background:var(--fg,#e8e8e8);opacity:.75}
 .si{display:grid;grid-template-columns:minmax(0,1fr) 120px 74px 74px;gap:2px 12px;align-items:start;padding:8px 10px;border-top:1px solid var(--line);text-transform:none;letter-spacing:.02em}
 .si:first-child{border-top:0}
 .si .ti{font-weight:700;text-transform:uppercase;letter-spacing:.06em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -198,6 +202,8 @@ footer{padding:10px 16px;color:var(--dim);display:flex;justify-content:space-bet
     <div class="sto-c"><button data-f="all" aria-pressed="true">ALL</button><button data-f="safe" aria-pressed="false">SAFE</button><button data-f="review" aria-pressed="false">REVIEW</button>
       <button id="sto-scan">RESCAN</button><span class="sp-l num" id="sto-age" aria-live="polite">--</span></div>
     <div id="sto-list"></div>
+    <h3 class="sto-th">WHERE YOUR SPACE GOES <span class="dim">// BIGGEST FOLDERS IN HOME</span></h3>
+    <div id="sto-home"></div>
     <p class="note">&gt;&gt;&gt; SUGGESTED - MACDASH NEVER DELETES. SIZES ARE MEASURED IN THE BACKGROUND, ONE LOW-PRIORITY SCAN EVERY 6H. REVIEW ITEMS: CHECK EACH ONE BEFORE YOU RUN ITS COMMAND.</p>
   </section>
   <section id="b-proc"><h2><span>TSK-07</span>TASKS RUNNING</h2>
@@ -307,6 +313,9 @@ function stoRender(){
   $("sto-rec").innerHTML=sto.scanned_at?"~"+esc(fb(sto.safe_total_bytes))+" SAFE<small>RECLAIMABLE &middot; "+esc(fb(sto.review_total_bytes))+" TO REVIEW</small>":"--";
   $("sto-age").innerHTML=sto.scanned_at?"LAST SCAN "+esc(ago(sto.scanned_at))+" AGO (TOOK "+esc(Math.round(sto.duration_s))+"S)"+(run?' // REFRESHING':""):
     run?'FIRST SCAN RUNNING':"NO SCAN YET - FIRST ONE RUNS ~60S AFTER START";
+  const th=(sto.top_home||[]).filter(h=>h.bytes>0).slice(0,12),hx=Math.max(1,...th.map(h=>h.bytes));
+  $("sto-home").innerHTML=th.length?th.map(h=>`<div><span title="${esc(h.path)}">${esc(h.path.replace(/^\/Users\/[^/]+/,"~"))}</span><b class="num">${esc(fb(h.bytes))}</b><i style="width:${Math.max(2,Math.round(100*h.bytes/hx))}%"></i></div>`).join(""):
+    '<div class="dim"><span>'+(run?"MEASURING HOME FOLDERS...":"NO DATA YET")+'</span></div>';
   const b=$("sto-scan");b.disabled=!!run;b.textContent=run?"SCANNING...":"RESCAN";
   const rows=items.filter(i=>stoF==="all"||i.safety===stoF),mx=Math.max(1,...rows.map(i=>i.bytes));
   $("sto-list").innerHTML=rows.length?rows.map(i=>`<div class="si" data-id="${esc(i.id)}"><span class="ti" title="${esc(i.note||i.label)}">${esc(i.label)}<em>${esc(i.category)}</em></span><span class="sz num"><b>${esc(fb(i.bytes))}</b><i style="width:${Math.max(2,Math.round(100*i.bytes/mx))}%"></i></span><span class="bd"><span class="${esc(i.safety)}">${esc(i.safety)}</span></span><button data-id="${esc(i.id)}"${i.command&&i.command!=="-"?"":" hidden"}>COPY</button><span class="pa" title="${esc(i.path)}">${esc(i.path)}</span>${i.command&&i.command!=="-"?`<code title="${esc(i.command)}">$ ${esc(i.command)}</code>`:""}</div>`).join(""):
