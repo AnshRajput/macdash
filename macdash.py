@@ -558,7 +558,7 @@ def monitor():
 
 # ---------- storage review: its own thread, never in the request path or the 3s refresher ----------
 STO_FIRST, STO_EVERY, STO_MIN_GAP = 60, 6 * 3600, 60   # first scan after start, interval, rescan throttle (seconds)
-STO_TIMEOUT, STO_HOME_TIMEOUT, STO_BUDGET = 120, 600, 1800  # per-path du, home du, whole-scan budget
+STO_TIMEOUT, STO_HOME_TIMEOUT, STO_BUDGET = 120, 1800, 1800  # per-path du, home du, whole-scan budget
 PROJ_MIN, PROJ_CAP, MAX_DEPTH = 100 * 1024 ** 2, 40, 6    # project artifacts: min size, how many kept, walk depth
 STORAGE = {"result": None, "running": False, "finished": 0.0}
 STO_WAKE = threading.Event()
@@ -805,15 +805,14 @@ def scan_storage(home=None, roots=None, now=None, du=None, publish=None):
         publish(payload())  # items are final here; the slow whole-home du below only adds top_home
     # per-child du so one slow folder (e.g. ~/Library) can't discard every other result
     deadline, measured = time.time() + STO_HOME_TIMEOUT, []
-    for e in sorted(_entries(home), key=lambda e: e.name):
+    # regular folders (Library, Documents, projects) first: they're usually the biggest
+    for e in sorted((e for e in _entries(home) if _isdir(e)), key=lambda e: (e.name.startswith("."), e.name)):
         left = deadline - time.time()
         if left <= 5:
             skipped.append(e.path)
             continue
-        if not _isdir(e):
-            continue
         try:
-            b = du_bytes(e.path, timeout=min(STO_TIMEOUT * 2, left))
+            b = du_bytes(e.path, timeout=min(STO_TIMEOUT * 5, left))
         except subprocess.TimeoutExpired:
             skipped.append(e.path)
             continue
