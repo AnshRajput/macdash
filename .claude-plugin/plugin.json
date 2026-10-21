@@ -1,6 +1,6 @@
 {
   "name": "macdash",
-  "version": "1.0.0",
+  "version": "1.2.0",
   "description": "Local MacBook health dashboard + alerts. Lets Claude read live RAM, swap, CPU, thermal, battery and running tasks, explain why your Mac is slow, and help clean it up.",
   "author": {
     "name": "Ansh Rajput",
