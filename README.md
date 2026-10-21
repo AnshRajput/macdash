@@ -1,5 +1,7 @@
 # macdash
 
+[![tests](https://github.com/AnshRajput/macdash/actions/workflows/test.yml/badge.svg)](https://github.com/AnshRajput/macdash/actions/workflows/test.yml)
+
 **Find out why your Mac is slow.** A local dashboard that shows RAM, swap, CPU, thermal throttling, battery, disk and every running task. It sends a macOS notification when the battery is low or the Mac starts struggling. It also ships as a **Claude Code plugin**, so Claude can read the same live data and tell you what to close.
 
 ![macdash dashboard](docs/screenshot.png)
@@ -67,6 +69,16 @@ Optional `~/.macdash/config.json` (or the path in `MACDASH_CONFIG`), read at sta
  "disk_free_gb": 10, "cooldown_min": 15, "notify": true, "leak_mb": 500}
 ```
 
+| Key | Default | Meaning |
+|---|---|---|
+| `battery_low` / `battery_critical` | 20 / 10 | Battery % alert levels (not charging) |
+| `swap_pct` | 75 | Swap-used % alert |
+| `cpu_pct` / `cpu_checks` | 90 / 3 | CPU % and consecutive 30s checks |
+| `disk_free_gb` | 10 | Low-disk alert |
+| `cooldown_min` | 15 | Minutes between repeats of an alert |
+| `leak_mb` | 500 | Memory growth that counts as a leak |
+| `notify` | true | Send macOS notifications |
+
 `"notify": false` still records alerts in the dashboard but sends no notifications. Set `MACDASH_PORT` to change the port (the host is always `127.0.0.1`). Restart after changing either.
 
 Each notification names the condition and the process most responsible.
@@ -77,7 +89,7 @@ Each notification names the condition and the process most responsible.
 launchctl kickstart -k gui/$(id -u)/dev.macdash   # restart
 launchctl bootout gui/$(id -u)/dev.macdash        # stop
 tail -f ~/Library/Logs/macdash.log                # logs
-python3 macdash.py --selftest                     # run the unit tests (same as python3 -m unittest -v test_macdash)
+python3 -m unittest -v test_macdash               # run the tests (also: python3 macdash.py --selftest)
 python3 macdash.py --test-alert                   # send a sample notification
 ```
 

@@ -42,7 +42,16 @@ Key fields:
 - `net` has `in_bps` / `out_bps` (bytes/s over the physical interfaces). `battery.health` has `cycle_count`, `condition` and `max_capacity_pct` (null if unavailable).
 - `ports[]` lists listening TCP ports (port, pid, name, cmd).
 - `suggestions[]` are ready-made cleanup hints (id, severity, title, detail, pids, mem_mb, `command`). macdash never runs the command. Start from these, then confirm with the user. `leaks[]` lists processes whose memory grew sharply in the last 30 min.
-- `config` is the effective alert thresholds. `GET /api/history` returns the last 2h of samples (every ~10s) for trends: cpu, mem_used_pct, swap_pct, pressure_level, battery_pct, net_in, net_out.
+- `leaks[]` entries are `{pid, name, from_mb, to_mb}`.
+- `config` is the effective alert thresholds (battery_low, battery_critical, swap_pct, cpu_pct, cpu_checks, disk_free_gb, cooldown_min, notify, leak_mb). `error` is null unless collection is failing.
+- `GET /api/history` returns `{interval_s, max_points, points[]}`: up to 720 samples (about 2h, one every ~10s) of `t` (epoch s), `cpu`, `mem_used_pct`, `swap_pct`, `pressure_level`, `battery_pct`, `net_in`, `net_out`.
+
+### How to use the new fields
+
+- **"What should I close?"** Lead with `suggestions[]` (warn first), quote `title`, `mem_mb` and `command`. Add your own findings from `procs[]` only after.
+- **"Is it getting worse?"** Fetch `/api/history` and compare the recent points with the older ones (cpu, mem_used_pct, swap_pct, pressure_level). Say whether each is rising, flat or falling.
+- **"What's running on port X?"** Look it up in `ports[]` and report `name`, `pid` and `cmd`. If it isn't listed, nothing is listening on it.
+- **Battery questions:** include `battery.health` (cycles, condition, max capacity) when relevant.
 
 ## 3. Report to the user
 
