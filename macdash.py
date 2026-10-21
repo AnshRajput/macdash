@@ -170,6 +170,8 @@ def collect():
 # ---------- alert decisions ----------
 def top_name(s, key):
     p = max(s["procs"], key=lambda p: p[key], default=None)
+    if p and not p[key]:
+        p = None  # top sample failed (all zero): don't blame a random process
     return "%s (%s)" % (p["app"], ("%d MB" % p["mem"]) if key == "mem" else ("%.0f%% CPU" % p["cpu"])) if p else "unknown"
 
 
@@ -193,7 +195,16 @@ def conditions(s, cpu_streak):
     return out
 
 
+TN = shutil.which("terminal-notifier") or "/opt/homebrew/bin/terminal-notifier"
+
+
 def notify(text):
+    # terminal-notifier: click opens the dashboard. osascript fallback is attributed to
+    # Script Editor, so clicking it opens Script Editor's file picker.
+    if os.path.exists(TN):
+        sh([TN, "-title", "MacDash", "-message", text, "-sound", "Basso",
+            "-group", "macdash", "-open", "http://127.0.0.1:%d/" % PORT])
+        return
     t = text.replace("\\", "\\\\").replace('"', '\\"')
     sh(["osascript", "-e", 'display notification "%s" with title "MacDash" sound name "Basso"' % t])
 
@@ -215,17 +226,33 @@ def check_once(s=None):
             print("ALERT", t, txt, flush=True)
 
 
+SNAP = {}  # latest collect() result, refreshed in background so requests never block on top/ps
+
+
+def refresher():
+    while True:
+        try:
+            SNAP["s"] = collect()
+        except Exception as e:
+            print("collect error", e, flush=True)
+        time.sleep(3)
+
+
+def snapshot():
+    return dict(SNAP.get("s") or collect())
+
+
 def monitor():
     while True:
         try:
-            check_once()
+            check_once(snapshot())
         except Exception as e:
             print("monitor error", e, flush=True)
         time.sleep(CHECK_EVERY)
 
 
 def api_stats():
-    s = collect()
+    s = snapshot()
     conds = conditions(s, STATE["cpu_streak"])
     lvl = "CRITICAL" if any(c[1] == 2 for c in conds) else "STRAINED" if conds else "OK"
     s["verdict"] = {"level": lvl, "reasons": [c[2] for c in conds]}
@@ -296,6 +323,7 @@ if __name__ == "__main__":
     elif "--test-alert" in sys.argv:
         notify("Test alert: MacDash notifications are working")
     else:
+        threading.Thread(target=refresher, daemon=True).start()
         threading.Thread(target=monitor, daemon=True).start()
         srv = ThreadingHTTPServer((HOST, PORT), H)
         print("macdash listening on http://%s:%d" % (HOST, PORT), flush=True)
