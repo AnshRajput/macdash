@@ -3,6 +3,8 @@ import http.client, json, os, tempfile, threading, time, unittest
 from http.server import ThreadingHTTPServer
 from unittest import mock
 
+# never read the developer's real ~/.macdash/config.json
+os.environ["MACDASH_CONFIG"] = os.path.join(tempfile.gettempdir(), "macdash-test-no-such-config.json")
 import macdash as m
 
 # ---- fixtures captured from a real M2 / macOS 26 machine (trimmed), plus edge-case variants ----

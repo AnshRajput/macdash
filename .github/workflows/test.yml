@@ -6,15 +6,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: python3 -m py_compile macdash.py
-      - run: sh -n install.sh uninstall.sh
+      - run: sh -n install.sh && sh -n uninstall.sh
       - run: python3 -m unittest -v test_macdash
       - name: Smoke test
         run: |
-          MACDASH_PORT=7799 python3 macdash.py &
+          MACDASH_PORT=7799 MACDASH_CONFIG=/dev/null python3 macdash.py &
           pid=$!
           trap 'kill $pid' EXIT
+          code=000
           for i in $(seq 1 30); do
-            [ "$(curl -s -o /tmp/stats.json -w '%{http_code}' http://127.0.0.1:7799/api/stats)" = 200 ] && break
+            code="$(curl -s -o /tmp/stats.json -w '%{http_code}' http://127.0.0.1:7799/api/stats || true)"
+            [ "$code" = 200 ] && break
             sleep 2
           done
-          python3 -c "import json; json.load(open('/tmp/stats.json'))"
+          [ "$code" = 200 ] || { echo "/api/stats never returned 200 (last: $code)"; exit 1; }
+          python3 -c "import json; d=json.load(open('/tmp/stats.json')); assert 'verdict' in d and 'procs' in d"
