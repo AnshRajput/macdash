@@ -1,6 +1,6 @@
 ---
 name: macdash
-description: Check this Mac's health and explain what's slowing it down. Use when the user says their Mac/MacBook is slow, lagging, hot, or out of memory; asks what is using RAM or CPU, what processes or tasks are running, what to close or kill; asks about battery, swap, thermal throttling, or disk space; or asks to install or open the macdash dashboard.
+description: Check this Mac's health and explain what's slowing it down. Use when the user says their Mac/MacBook is slow, lagging, hot, or out of memory; asks what is using RAM or CPU, what processes or tasks are running, what to close or kill; asks about battery, swap, thermal throttling, disk space, junk files or storage; or asks to install or open the macdash dashboard.
 ---
 
 # macdash
@@ -44,6 +44,7 @@ Key fields:
 - `suggestions[]` are ready-made cleanup hints (id, severity, title, detail, pids, mem_mb, `command`). macdash never runs the command. Start from these, then confirm with the user. `leaks[]` lists processes whose memory grew sharply in the last 30 min.
 - `leaks[]` entries are `{pid, name, from_mb, to_mb}`.
 - `config` is the effective alert thresholds (battery_low, battery_critical, swap_pct, cpu_pct, cpu_checks, disk_free_gb, cooldown_min, notify, leak_mb). `error` is null unless collection is failing.
+- `storage` is a short summary: `scanned_at`, `running`, `safe_total_bytes`, `review_total_bytes` and the `top` 3 items. Full detail is in `/api/storage` (section 3).
 - `GET /api/history` returns `{interval_s, max_points, points[]}`: up to 720 samples (one every ~10s while viewed, ~30s idle) of `t` (epoch s), `cpu`, `mem_used_pct`, `swap_pct`, `pressure_level`, `battery_pct`, `net_in`, `net_out`.
 
 ### How to use the new fields
@@ -53,7 +54,16 @@ Key fields:
 - **"What's running on port X?"** Look it up in `ports[]` and report `name`, `pid` and `cmd`. If it isn't listed, nothing is listening on it.
 - **Battery questions:** include `battery.health` (cycles, condition, max capacity) when relevant.
 
-## 3. Report to the user
+## 3. Storage review
+
+When the user asks about disk space, junk files, caches or what is eating storage:
+
+1. `curl -s http://127.0.0.1:7777/api/storage`. It returns instantly with the last scan: `scanned_at`, `duration_s`, `running`, `disk` (`total`, `used`, `free`, `purgeable` in bytes), `swap_files_gb`, `items[]` (`id`, `category`, `label`, `path`, `bytes`, `safety`, `command`, `note`), `safe_total_bytes`, `review_total_bytes` and `top_home[]` (biggest folders in `~`).
+2. If `scanned_at` is null or old (hours), call `curl -s http://127.0.0.1:7777/api/storage/rescan`. It answers `{"scheduled": true|false}` (false means a scan is already running or one finished under a minute ago). Then poll `/api/storage` every 10-15s until `running` is false. A scan can take a few minutes. The first scan after a start happens about 60s in.
+3. Summarize: free space, how much is reclaimable as `safe` versus `review`, then the biggest items with their `command`. Mention `top_home` for space that is not in the catalog. `keep` items are context only (for example the VM volume of swap files, which shrinks after a reboot).
+4. **Never delete or run a cleanup command without the user's explicit confirmation.** For `safe` items, propose the exact `command` and wait for a yes. For `review` items (archives, backups, AVDs, VM disks, worktrees, Downloads installers, `.venv`) go item by item: say what it is, read the `note`, check it first (for example `git -C <repo> status` in a worktree, `ollama list`, `docker system df`), and ask. macdash has no delete endpoint; commands only ever run if you run them after a yes.
+
+## 4. Report to the user
 
 Lead with the verdict and the one or two biggest causes. Then give a short table of the top memory and CPU consumers, with what each one actually is, decoded from `cmd`. Flag the usual leftovers that are safe to close:
 

@@ -521,5 +521,348 @@ class Misc(unittest.TestCase):
         self.assertFalse(hasattr(m.H, "do_POST") or hasattr(m.H, "do_PUT") or hasattr(m.H, "do_DELETE"))
 
 
+# ---------- storage review ----------
+def mkfile(path, kb=8, age_days=0):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "wb") as f:
+        f.write(b"x" * 1024 * kb)
+    if age_days:
+        t = time.time() - age_days * 86400
+        os.utime(path, (t, t))
+
+
+class StorageCatalog(unittest.TestCase):
+    def test_catalog_shape(self):
+        ids = [c[0] for c in m.CATALOG]
+        self.assertEqual(len(ids), len(set(ids)))
+        for id, cat, label, paths, safety, cmd, note in m.CATALOG:
+            self.assertIn(safety, m.SAFETY, id)
+            self.assertTrue(paths and all(p.startswith(("~/", "/")) for p in paths), id)
+            self.assertTrue(cmd and label and cat, id)
+
+    def test_catalog_is_portable(self):
+        for c in m.CATALOG:
+            for p in c[3]:
+                self.assertNotIn("/Users/", p)
+
+    def test_catalog_covers_known_junk(self):
+        paths = " ".join(p for c in m.CATALOG for p in c[3])
+        for want in ("DerivedData", "Xcode/Archives", "DeviceSupport", "CoreSimulator/Devices", "CoreSimulator/Caches", ".android/avd", "system-images",
+                     ".gradle/caches", ".gradle/wrapper", ".npm", "pnpm", "Yarn", "pip", ".pub-cache", "CocoaPods", "Homebrew", "~/.cache",
+                     "Library/Caches", "Library/Logs", ".Trash", "MobileSync/Backup", ".colima", ".ollama"):
+            self.assertIn(want, paths)
+
+    def test_safety_classification(self):
+        by = {c[0]: c for c in m.CATALOG}
+        for id in ("xcode-archives", "android-avd", "ios-backups", "colima", "ollama", "coresim-devices"):
+            self.assertEqual(by[id][4], "review", id)
+        for id in ("xcode-derived", "npm", "gradle-caches", "trash", "lib-caches"):
+            self.assertEqual(by[id][4], "safe", id)
+        self.assertEqual(by["photos"][4], "keep")
+        for c in m.CATALOG:  # official tools first; rm -rf only on pure caches (never review/keep)
+            if c[4] != "safe":
+                self.assertNotIn("rm -rf", c[5], c[0])
+        self.assertEqual(by["npm"][5], "npm cache clean --force")
+
+    def test_artifact_rules(self):
+        for k, (need, safety, cmd, note) in m.ARTIFACTS.items():
+            self.assertIn(safety, m.SAFETY)
+            self.assertTrue("{p}" in cmd or "{d}" in cmd, k)
+        self.assertEqual(m.ARTIFACTS[".venv"][1], "review")
+        self.assertEqual(m.ARTIFACTS["node_modules"][1], "safe")
+
+    def test_roots_config(self):
+        self.assertEqual(m.DEFAULTS["storage_roots"], ["~/engineering", "~/Projects", "~/Developer", "~/code", "~/src"])
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
+            json.dump({"storage_roots": ["~/x", "/y"]}, f)
+        self.assertEqual(m.load_config(f.name)["storage_roots"], ["~/x", "/y"])
+        for bad in ("nope", [1, 2], None):
+            with open(f.name, "w") as g:
+                json.dump({"storage_roots": bad}, g)
+            self.assertEqual(m.load_config(f.name)["storage_roots"], m.DEFAULTS["storage_roots"])
+        os.unlink(f.name)
+
+
+class StorageScan(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.home = os.path.realpath(self.tmp.name)
+        h = self.home
+        mkfile(h + "/Library/Caches/foo/a.bin", 64)
+        mkfile(h + "/Library/Caches/Homebrew/b.bin", 32)
+        mkfile(h + "/.npm/_cacache/c", 16)
+        mkfile(h + "/Library/Developer/Xcode/DerivedData/App/d", 16)
+        mkfile(h + "/.android/avd/Pixel.avd/userdata.img", 16)
+        mkfile(h + "/Downloads/old.dmg", 100, age_days=30)
+        mkfile(h + "/Downloads/fresh.dmg", 100)
+        mkfile(h + "/Downloads/notes.txt", 100, age_days=30)
+        p = h + "/engineering/app"
+        mkfile(p + "/package.json", 1)
+        mkfile(p + "/node_modules/pkg/index.js", 64)
+        mkfile(p + "/pubspec.yaml", 1)
+        mkfile(p + "/build/out.bin", 64)
+        mkfile(p + "/.git/node_modules/x", 64)           # inside .git: never reported
+        mkfile(p + "/.claude/worktrees/wt1/src/a.dart", 64)
+        mkfile(p + "/.claude/worktrees/wt1/node_modules/z", 64)  # counted in the worktree, not listed twice
+        os.symlink(h + "/engineering", p + "/loop")      # symlink loop
+        os.symlink(p + "/node_modules", h + "/engineering/linked_nm")
+        os.makedirs(h + "/engineering/secret/node_modules")
+        os.chmod(h + "/engineering/secret", 0)           # unreadable
+        mkfile(h + "/engineering/a/b/c/d/e/node_modules/deep", 8)   # depth 6: found
+        mkfile(h + "/engineering/a/b/c/d/e/f/node_modules/toodeep", 8)  # depth 7: beyond the cap
+        pats = [mock.patch.object(m, "PROJ_MIN", 0), mock.patch.object(m, "disk_info", return_value={"total": 100, "used": 60, "free": 40, "purgeable": 5}),
+                mock.patch.object(m, "swap_files_bytes", return_value=2 * 1024 ** 3)]
+        for pt in pats:
+            pt.start()
+            self.addCleanup(pt.stop)
+        self.addCleanup(self.tmp.cleanup)
+        self.addCleanup(lambda: os.chmod(h + "/engineering/secret", 0o755))  # runs first: tmp cleanup needs access
+
+    def scan(self, **kw):
+        return m.scan_storage(home=self.home, roots=["~/engineering", "~/nope"], **kw)
+
+    def test_payload_shape(self):
+        r = self.scan()
+        for k in ("scanned_at", "duration_s", "running", "disk", "swap_files_gb", "items", "safe_total_bytes", "review_total_bytes", "top_home"):
+            self.assertIn(k, r)
+        self.assertEqual(r["swap_files_gb"], 2.0)
+        self.assertFalse(r["running"])
+        for i in r["items"]:
+            self.assertEqual(set(i), {"id", "category", "label", "path", "bytes", "safety", "command", "note"})
+            self.assertIn(i["safety"], m.SAFETY)
+            self.assertGreater(i["bytes"], 0)
+        self.assertEqual([i["bytes"] for i in r["items"]], sorted((i["bytes"] for i in r["items"]), reverse=True))
+        self.assertEqual(r["safe_total_bytes"], sum(i["bytes"] for i in r["items"] if i["safety"] == "safe"))
+        self.assertEqual(r["review_total_bytes"], sum(i["bytes"] for i in r["items"] if i["safety"] == "review"))
+        self.assertTrue(r["top_home"] and all(set(t) == {"path", "bytes"} for t in r["top_home"]))
+        self.assertNotIn(self.home, [t["path"] for t in r["top_home"]])
+
+    def test_finds_catalog_items(self):
+        by = {i["id"]: i for i in self.scan()["items"]}
+        for id in ("lib-caches", "homebrew", "npm", "xcode-derived", "android-avd", "downloads-installers", "vm-swap"):
+            self.assertIn(id, by)
+        self.assertEqual(by["npm"]["safety"], "safe")
+        self.assertEqual(by["android-avd"]["safety"], "review")
+        self.assertEqual(by["downloads-installers"]["safety"], "review")
+        self.assertEqual(by["vm-swap"]["safety"], "keep")
+        self.assertNotIn("xcode-archives", by)   # missing path skipped
+
+    def test_nested_not_double_counted(self):
+        by = {i["id"]: i for i in self.scan()["items"]}
+        self.assertEqual(by["lib-caches"]["path"], self.home + "/Library/Caches")
+        self.assertIn("Excludes", by["lib-caches"]["note"])
+        self.assertLess(by["lib-caches"]["bytes"], m.du_bytes(self.home + "/Library/Caches"))
+
+    def test_downloads_installers_only_old(self):
+        self.assertEqual(m.downloads_installers(self.home), (100 * 1024, 1))
+
+    def test_project_sweep(self):
+        items = [i for i in self.scan()["items"] if i["id"].startswith("proj-")]
+        paths = {i["path"]: i for i in items}
+        p = self.home + "/engineering/app"
+        self.assertEqual(paths[p + "/node_modules"]["safety"], "safe")
+        self.assertIn("rm -rf", paths[p + "/node_modules"]["command"])
+        self.assertIn("flutter clean", paths[p + "/build"]["command"])
+        wt = paths[p + "/.claude/worktrees/wt1"]
+        self.assertEqual((wt["safety"], wt["category"]), ("review", "worktree"))
+        self.assertIn("git -C", wt["command"])
+        self.assertIn("worktree remove", wt["command"])
+        for bad in (p + "/.git/node_modules", p + "/loop", self.home + "/engineering/linked_nm", p + "/.claude/worktrees/wt1/node_modules",
+                    self.home + "/engineering/secret/node_modules", self.home + "/engineering/a/b/c/d/e/f/node_modules"):
+            self.assertNotIn(bad, paths)
+        self.assertIn(self.home + "/engineering/a/b/c/d/e/node_modules", paths)
+
+    def test_symlink_loop_terminates(self):
+        t = time.time()
+        self.scan()
+        self.assertLess(time.time() - t, 30)
+
+    def test_catalog_symlink_not_followed(self):
+        real = self.home + "/real_npm"
+        mkfile(real + "/big", 512)
+        os.rename(self.home + "/.npm", self.home + "/.npm_old")
+        os.symlink(real, self.home + "/.npm")
+        self.assertNotIn("npm", {i["id"] for i in self.scan()["items"]})
+
+    def test_timeout_skips_one_path(self):
+        real = m.du_bytes
+        def du(path):
+            if path.endswith("DerivedData"):
+                raise m.subprocess.TimeoutExpired("du", 1)
+            return real(path)
+        r = self.scan(du=du)
+        self.assertIn(self.home + "/Library/Developer/Xcode/DerivedData", r["skipped"])
+        ids = {i["id"] for i in r["items"]}
+        self.assertNotIn("xcode-derived", ids)
+        self.assertIn("npm", ids)
+
+    def test_budget_exhausted_skips_rest(self):
+        with mock.patch.object(m, "STO_BUDGET", -1):
+            r = self.scan()
+        self.assertTrue(r["skipped"])
+        self.assertEqual([i["id"] for i in r["items"] if i["id"] not in ("downloads-installers", "vm-swap")], [])
+
+    def test_du_bytes(self):
+        self.assertIsNone(m.du_bytes(self.home + "/does-not-exist"))
+        self.assertGreaterEqual(m.du_bytes(self.home + "/Library/Caches/foo"), 64 * 1024)
+        with mock.patch.object(m.subprocess, "run", side_effect=m.subprocess.TimeoutExpired("du", 1)):
+            with self.assertRaises(m.subprocess.TimeoutExpired):
+                m.du_bytes("/x")
+        with mock.patch.object(m.subprocess, "run") as run:
+            run.return_value.stdout = "12\t/x\n"
+            self.assertEqual(m.du_bytes("/x"), 12 * 1024)
+            self.assertEqual(run.call_args[0][0][:3], ["nice", "-n", "19"])  # low priority, one filesystem
+            self.assertIn("-skx", run.call_args[0][0])
+
+    def test_publish_gets_items_before_home_walk(self):
+        seen = []
+        r = self.scan(publish=lambda p: seen.append(dict(p)))
+        self.assertEqual(len(seen), 1)
+        self.assertEqual(seen[0]["top_home"], [])
+        self.assertEqual(seen[0]["items"], r["items"])
+        self.assertTrue(r["top_home"])
+
+    def test_scan_never_deletes(self):
+        walk = lambda: sorted(os.path.join(d, f) for d, _, fs in os.walk(self.home) for f in fs)
+        before = walk()
+        self.scan()
+        self.assertEqual(before, walk())
+
+    def test_net_nested(self):
+        a = {"path": "/x", "bytes": 100, "note": ""}
+        b = {"path": "/x/y", "bytes": 30, "note": ""}
+        c = {"path": "/xy", "bytes": 5, "note": ""}
+        m.net_nested([a, b, c])
+        self.assertEqual((a["bytes"], b["bytes"], c["bytes"]), (70, 30, 5))
+
+
+class StorageApi(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.srv = ThreadingHTTPServer(("127.0.0.1", 0), m.H)
+        cls.port = cls.srv.server_address[1]
+        threading.Thread(target=cls.srv.serve_forever, daemon=True).start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.srv.shutdown(); cls.srv.server_close()
+
+    def setUp(self):
+        m.STORAGE.update(result=None, running=False, finished=0.0)
+        m.STO_WAKE.clear()
+        m.SNAP.clear(); m.READY.clear()
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+
+    def req(self, path, method="GET"):
+        c = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
+        c.request(method, path)
+        r = c.getresponse()
+        body = r.read()
+        c.close()
+        return r.status, json.loads(body) if body.startswith(b"{") else body
+
+    def result(self, safe_gb=0.0):
+        return {"scanned_at": 1000.0, "duration_s": 41.2, "running": False, "disk": {"total": 10, "used": 6, "free": 4, "purgeable": None},
+                "swap_files_gb": 1.0, "safe_total_bytes": int(safe_gb * 1024 ** 3), "review_total_bytes": 7, "top_home": [], "skipped": [],
+                "items": [{"id": "npm", "category": "dev-cache", "label": "npm cache", "path": "/h/.npm", "bytes": int(safe_gb * 1024 ** 3),
+                           "safety": "safe", "command": "npm cache clean --force", "note": ""},
+                          {"id": "vm-swap", "category": "system", "label": "VM", "path": "/vm", "bytes": 9, "safety": "keep", "command": "-", "note": ""}]}
+
+    def test_storage_before_first_scan(self):
+        st, d = self.req("/api/storage")
+        self.assertEqual(st, 200)
+        self.assertIsNone(d["scanned_at"])
+        self.assertEqual(d["items"], [])
+        self.assertIn("running", d)
+
+    def test_storage_shape_and_running_flag(self):
+        m.STORAGE.update(result=self.result(1), running=True)
+        st, d = self.req("/api/storage?x=1")
+        self.assertEqual(st, 200)
+        for k in ("scanned_at", "duration_s", "running", "disk", "swap_files_gb", "items", "safe_total_bytes", "review_total_bytes", "top_home"):
+            self.assertIn(k, d)
+        self.assertTrue(d["running"])
+        self.assertEqual(d["items"][0]["id"], "npm")
+
+    def test_rescan_shape_and_throttle(self):
+        st, d = self.req("/api/storage/rescan")
+        self.assertEqual((st, d), (200, {"scheduled": True}))
+        self.assertTrue(m.STO_WAKE.is_set())
+        self.assertTrue(m.STORAGE["running"])
+        self.assertEqual(self.req("/api/storage/rescan")[1], {"scheduled": False})    # already running
+        m.STORAGE.update(running=False, finished=time.time())
+        self.assertEqual(self.req("/api/storage/rescan")[1], {"scheduled": False})    # finished under 60s ago
+        m.STORAGE["finished"] = time.time() - 61
+        self.assertEqual(self.req("/api/storage/rescan")[1], {"scheduled": True})
+
+    def test_rescan_throttle_unit(self):
+        m.STORAGE.update(running=False, finished=100.0)
+        self.assertEqual(m.storage_rescan(now=160.0), {"scheduled": False})
+        self.assertEqual(m.storage_rescan(now=161.0), {"scheduled": True})
+
+    def test_no_endpoint_deletes_anything(self):
+        victim = os.path.join(self.tmp.name, "keepme")
+        mkfile(victim)
+        res = self.result(1)
+        res["items"][0].update(path=victim, command="rm -rf " + victim)
+        m.STORAGE.update(result=res)
+        m.SNAP["s"] = snap(suggestions=[], ports=[], os="26.0", uptime=5, apps=[]); m.READY.set()
+        for p in ("/api/storage", "/api/storage/rescan", "/api/stats"):
+            self.req(p)
+        for p in ("/api/storage/delete", "/api/storage/clean", "/api/storage/npm", "/api/delete", "/api/clean"):
+            self.assertEqual(self.req(p)[0], 404, p)
+        for meth in ("POST", "DELETE", "PUT"):
+            self.assertEqual(self.req("/api/storage", meth)[0], 501)
+        self.assertTrue(os.path.exists(victim))
+
+    def test_source_has_no_delete_calls(self):
+        with open(m.__file__) as f:
+            src = f.read()
+        for bad in ("os.remove", "os.unlink", "shutil.rmtree", "os.rmdir", "send2trash", "os.system", "shell=True"):
+            self.assertNotIn(bad, src)
+
+    def test_stats_has_storage_summary(self):
+        m.SNAP["s"] = snap(suggestions=[], ports=[], os="26.0", uptime=5, apps=[]); m.READY.set()
+        _, d = self.req("/api/stats")
+        self.assertEqual(set(d["storage"]), {"scanned_at", "running", "safe_total_bytes", "review_total_bytes", "top"})
+        self.assertIsNone(d["storage"]["scanned_at"])
+        self.assertNotIn("storage-reclaimable", [x["id"] for x in d["suggestions"]])
+
+    def test_stats_top3_excludes_keep_and_suggests_over_5gb(self):
+        res = self.result(6)
+        res["items"] = [dict(res["items"][0], id="i%d" % n, bytes=(9 - n) * 1024 ** 3) for n in range(5)] + [res["items"][1]]
+        m.STORAGE.update(result=res)
+        m.SNAP["s"] = snap(suggestions=[], ports=[], os="26.0", uptime=5, apps=[]); m.READY.set()
+        _, d = self.req("/api/stats")
+        self.assertEqual(len(d["storage"]["top"]), 3)
+        self.assertTrue(all(t["safety"] != "keep" for t in d["storage"]["top"]))
+        s = [x for x in d["suggestions"] if x["id"] == "storage-reclaimable"]
+        self.assertEqual(len(s), 1)
+        self.assertIn("~6 GB", s[0]["title"])
+        m.STORAGE.update(result=self.result(5))   # exactly 5 GB is not "more than 5"
+        self.assertNotIn("storage-reclaimable", [x["id"] for x in self.req("/api/stats")[1]["suggestions"]])
+
+    def test_disk_low_mentions_top_safe_item(self):
+        s = snap(disk={"free": 4 * 1024 ** 3})
+        txt = {t: x for t, _, x in m.conditions(s, 0)}["disk_low"]
+        self.assertEqual(txt, "Disk low: 4.0 GB free")
+        m.STORAGE.update(result=self.result(3))
+        txt = {t: x for t, _, x in m.conditions(s, 0)}["disk_low"]
+        self.assertIn("Biggest safe clean: npm cache (3.0 GB): npm cache clean --force", txt)
+
+    def test_loop_scans_in_own_thread_and_records(self):
+        with mock.patch.object(m, "scan_storage", return_value=self.result(1)), mock.patch.object(m, "STO_FIRST", 0), \
+                mock.patch.object(m, "STO_EVERY", 3600):
+            threading.Thread(target=m.storage_loop, daemon=True).start()
+            for _ in range(100):
+                if m.STORAGE["result"] and not m.STORAGE["running"]:
+                    break
+                time.sleep(0.05)
+        self.assertEqual(m.STORAGE["result"]["duration_s"], 41.2)
+        self.assertFalse(m.STORAGE["running"])
+        self.assertGreater(m.STORAGE["finished"], 0)
+
+
 if __name__ == "__main__":
     unittest.main()

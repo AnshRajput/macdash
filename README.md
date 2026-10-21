@@ -45,6 +45,7 @@ Then just ask: *"why is my Mac lagging?"*, *"what's eating my RAM?"*, or *"what'
 | Listening ports | Every TCP listener with its pid and command |
 | Cleanup suggestions | Stale dev servers, booted simulators, VMs, Gradle daemons, hung `flutter_tester`/`git`, duplicate Dart analysis servers, memory leaks, each with a command to review and run yourself (with a COPY button; macdash never runs them) |
 | History | Last 720 samples (about 2h while viewed, longer idle) of CPU, memory, swap, pressure, battery and network samples |
+| Storage review | Disk bar (used / purgeable / free), reclaimable total split into SAFE and REVIEW, and the biggest junk and cache locations with a suggested command and COPY button (see below) |
 | Alerts | The last 50 alerts |
 | Tasks running | Sortable, filterable process table (memory, CPU, uptime, full command) with a group-by-app toggle |
 
@@ -78,10 +79,26 @@ Optional `~/.macdash/config.json` (or the path in `MACDASH_CONFIG`), read at sta
 | `cooldown_min` | 15 | Minutes between repeats of an alert |
 | `leak_mb` | 500 | Memory growth that counts as a leak |
 | `notify` | true | Send macOS notifications |
+| `storage_roots` | `~/engineering`, `~/Projects`, `~/Developer`, `~/code`, `~/src` | Folders swept for build artifacts and agent worktrees |
 
 `"notify": false` still records alerts in the dashboard but sends no notifications. Set `MACDASH_PORT` to change the port (the host is always `127.0.0.1`). Restart after changing either.
 
 Each notification names the condition and the process most responsible.
+
+## Storage review
+
+Answers "where did my disk go, and what can I delete?". A scanner thread of its own (never the 3s refresher, never a request) measures well-known junk with low-priority `du` (`nice -n 19`, one filesystem, symlinks never followed, 120s cap per path): Xcode DerivedData / Archives / DeviceSupport, CoreSimulator, Android AVDs and system images, Gradle, npm / pnpm / Yarn / pip / pub / CocoaPods / Homebrew caches, `~/.cache`, `~/Library/Caches`, logs, Trash, old installers in Downloads (`.dmg .pkg .zip .xip .ipa .apk` over 7 days), iOS backups, Colima / Docker, Ollama models. It also sweeps your project folders for `node_modules`, `.next`, `build`, `.dart_tool`, `Pods`, `.gradle`, `target`, `.venv` and stale agent worktrees (`.claude/worktrees`), depth 6, skipping `.git`.
+
+The first scan runs about 60s after start, then every 6h, or press RESCAN (throttled to once a minute). A full scan can take a few minutes on a big disk; it runs niced and sequentially.
+
+- **SAFE**: pure caches and build output that regenerate. **REVIEW**: could hold something you want (archives, backups, AVDs, VM disks, worktrees, `.venv`). **KEEP**: shown for size only.
+- Each item carries the exact suggested command (the official tool first, such as `npm cache clean --force`; `rm -rf` only for pure caches). macdash never runs it and has no delete endpoint. Paste it yourself.
+- `GET /api/storage` returns the last result instantly; `GET /api/storage/rescan` returns `{"scheduled": bool}`. `/api/stats` carries a short `storage` summary, adds a "Reclaimable storage" cleanup suggestion above 5 GB, and the low-disk alert names the biggest safe item.
+- Project folders come from `storage_roots` in `config.json` (default `~/engineering`, `~/Projects`, `~/Developer`, `~/code`, `~/src`; only ones that exist).
+
+```json
+{"storage_roots": ["~/work", "~/engineering"]}
+```
 
 ## Commands
 
@@ -93,7 +110,7 @@ python3 -m unittest -v test_macdash               # run the tests (also: python3
 python3 macdash.py --test-alert                   # send a sample notification
 ```
 
-JSON API (GET only): `/api/stats` and `/api/history`. Stats are refreshed in the background, every 3s while the dashboard or API is being used and every 30s otherwise (alerts keep running), so responses are instant. The first request after a start waits for the first sample and returns 503 if it takes over 20s.
+JSON API (GET only): `/api/stats`, `/api/history`, `/api/storage` and `/api/storage/rescan`. Stats are refreshed in the background, every 3s while the dashboard or API is being used and every 30s otherwise (alerts keep running), so responses are instant. The first request after a start waits for the first sample and returns 503 if it takes over 20s.
 
 ## License
 

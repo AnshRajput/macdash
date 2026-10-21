@@ -1,6 +1,6 @@
 #!/opt/homebrew/bin/python3
 """macdash: local MacBook health dashboard + alerts. Stdlib only, read-only, 127.0.0.1 only."""
-import json, os, re, shutil, subprocess, sys, threading, time
+import hashlib, json, os, re, shlex, shutil, subprocess, sys, threading, time
 from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -17,7 +17,8 @@ PID_EVERY, PID_KEEP, LEAK_WINDOW, LEAK_MIN_SPAN = 60, 3600, 1800, 600
 THERMAL = ["nominal", "fair", "serious", "critical"]
 PRESSURE = {1: "normal", 2: "warn", 4: "critical"}
 DEFAULTS = {"battery_low": 20, "battery_critical": 10, "swap_pct": 75, "cpu_pct": 90, "cpu_checks": 3,
-            "disk_free_gb": 10, "cooldown_min": 15, "notify": True, "leak_mb": 500}
+            "disk_free_gb": 10, "cooldown_min": 15, "notify": True, "leak_mb": 500,
+            "storage_roots": ["~/engineering", "~/Projects", "~/Developer", "~/code", "~/src"]}
 
 ALERTS, LAST_FIRED, STATE = [], {}, {"cpu_streak": 0}
 LOCK = threading.Lock()
@@ -50,6 +51,10 @@ def load_config(path=None):
         return cfg
     for k, d in DEFAULTS.items():
         v = user.get(k, d)
+        if isinstance(d, list):
+            if isinstance(v, list) and all(isinstance(x, str) for x in v):
+                cfg[k] = v
+            continue
         if isinstance(d, bool):
             ok = isinstance(v, bool)
         else:
@@ -461,8 +466,9 @@ def conditions(s, cpu_streak, cfg=None):
         out.append(("cpu", 1, "CPU above %g%% for %d checks. Top CPU: %s" % (cfg["cpu_pct"], cpu_streak, top_name(s, "cpu"))))
     free = s.get("disk", {}).get("free")
     if free is not None and free < cfg["disk_free_gb"] * 1024 ** 3:
+        hint = storage_hint()
         out.append(("disk_low", 2 if free < cfg["disk_free_gb"] * 1024 ** 3 / 2 else 1,
-                    "Disk low: %.1f GB free" % (free / 1024 ** 3)))
+                    "Disk low: %.1f GB free" % (free / 1024 ** 3) + (". Biggest safe clean: " + hint if hint else "")))
     if s.get("leaks"):
         l = s["leaks"][0]
         out.append(("leak", 1, "Possible memory leak: %s grew %d MB to %d MB in 30 min" % (l["name"], l["from_mb"], l["to_mb"])))
@@ -550,6 +556,315 @@ def monitor():
         time.sleep(CHECK_EVERY)
 
 
+# ---------- storage review: its own thread, never in the request path or the 3s refresher ----------
+STO_FIRST, STO_EVERY, STO_MIN_GAP = 60, 6 * 3600, 60   # first scan after start, interval, rescan throttle (seconds)
+STO_TIMEOUT, STO_HOME_TIMEOUT, STO_BUDGET = 120, 600, 1800  # per-path du, home du, whole-scan budget
+PROJ_MIN, PROJ_CAP, MAX_DEPTH = 100 * 1024 ** 2, 40, 6    # project artifacts: min size, how many kept, walk depth
+STORAGE = {"result": None, "running": False, "finished": 0.0}
+STO_WAKE = threading.Event()
+SAFETY = ("safe", "review", "keep")
+INSTALLER_EXT = (".dmg", ".pkg", ".zip", ".xip", ".ipa", ".apk")
+# id, category, label, [paths], safety, suggested command, note. Commands are only ever shown, never run.
+CATALOG = [
+    ("xcode-derived", "xcode", "Xcode DerivedData", ["~/Library/Developer/Xcode/DerivedData"], "safe",
+     "rm -rf ~/Library/Developer/Xcode/DerivedData/*", "Build products. Rebuilt on next build."),
+    ("xcode-archives", "xcode", "Xcode Archives", ["~/Library/Developer/Xcode/Archives"], "review",
+     "open ~/Library/Developer/Xcode/Archives", "App archives you may still need for symbolication or re-upload. Delete old ones in Xcode Organizer."),
+    ("xcode-devsupport", "xcode", "Xcode device support symbols",
+     ["~/Library/Developer/Xcode/iOS DeviceSupport", "~/Library/Developer/Xcode/watchOS DeviceSupport", "~/Library/Developer/Xcode/tvOS DeviceSupport"], "safe",
+     "rm -rf ~/Library/Developer/Xcode/*\\ DeviceSupport/*", "Re-created when you connect a device."),
+    ("coresim-devices", "simulator", "iOS simulator devices", ["~/Library/Developer/CoreSimulator/Devices"], "review",
+     "xcrun simctl delete unavailable", "Removes only simulators whose runtime is gone. `xcrun simctl erase all` wipes every simulator's data."),
+    ("coresim-caches", "simulator", "CoreSimulator caches", ["~/Library/Developer/CoreSimulator/Caches"], "safe",
+     "rm -rf ~/Library/Developer/CoreSimulator/Caches/*", "Regenerable."),
+    ("android-avd", "android", "Android emulator AVDs", ["~/.android/avd"], "review",
+     "avdmanager list avd  # then: avdmanager delete avd -n <name>", "Each AVD holds its own app data."),
+    ("android-images", "android", "Android SDK system images", ["~/Library/Android/sdk/system-images"], "review",
+     'sdkmanager --list_installed  # then: sdkmanager --uninstall "system-images;<package>"', "Needed by AVDs that use them."),
+    ("gradle-caches", "dev-cache", "Gradle caches", ["~/.gradle/caches"], "safe",
+     "rm -rf ~/.gradle/caches/*", "Stop daemons first (./gradlew --stop). Dependencies re-download on next build."),
+    ("gradle-wrapper", "dev-cache", "Gradle wrapper distributions", ["~/.gradle/wrapper/dists"], "safe",
+     "rm -rf ~/.gradle/wrapper/dists/*", "Re-downloaded per project on next build."),
+    ("npm", "dev-cache", "npm cache", ["~/.npm"], "safe", "npm cache clean --force", ""),
+    ("pnpm", "dev-cache", "pnpm store", ["~/Library/pnpm/store", "~/.local/share/pnpm/store"], "safe", "pnpm store prune", "Removes only unreferenced packages."),
+    ("yarn", "dev-cache", "Yarn cache", ["~/Library/Caches/Yarn", "~/.cache/yarn"], "safe", "yarn cache clean", ""),
+    ("pip", "dev-cache", "pip cache", ["~/Library/Caches/pip", "~/.cache/pip"], "safe", "pip cache purge", ""),
+    ("pub", "dev-cache", "Dart/Flutter pub cache", ["~/.pub-cache"], "safe", "dart pub cache clean", "Packages re-download on next pub get."),
+    ("cocoapods", "dev-cache", "CocoaPods cache", ["~/Library/Caches/CocoaPods"], "safe", "pod cache clean --all", ""),
+    ("homebrew", "dev-cache", "Homebrew downloads", ["~/Library/Caches/Homebrew"], "safe", "brew cleanup --prune=all", ""),
+    ("dot-cache", "cache", "~/.cache", ["~/.cache"], "safe", "rm -rf ~/.cache/*", "Per-tool caches."),
+    ("lib-caches", "cache", "App caches (~/Library/Caches)", ["~/Library/Caches"], "safe", "rm -rf ~/Library/Caches/*",
+     "Regenerable. Quit apps first."),
+    ("lib-logs", "cache", "Logs (~/Library/Logs)", ["~/Library/Logs"], "safe", "rm -rf ~/Library/Logs/*", ""),
+    ("trash", "trash", "Trash", ["~/.Trash"], "safe", "osascript -e 'tell app \"Finder\" to empty trash'", "Emptying cannot lose anything you have not already discarded."),
+    ("ios-backups", "backup", "iOS device backups", ["~/Library/Application Support/MobileSync/Backup"], "review",
+     "ls -lh ~/Library/Application\\ Support/MobileSync/Backup", "Delete via Finder > device > Manage Backups. A backup may be your only copy."),
+    ("colima", "vm", "Colima VM (Docker images and volumes)", ["~/.colima"], "review", "docker system df  # then: docker system prune",
+     "`colima delete` removes the whole VM including volumes."),
+    ("docker-desktop", "vm", "Docker Desktop data", ["~/Library/Containers/com.docker.docker"], "review", "docker system df  # then: docker system prune",
+     "Volumes can hold database data. Inspect before pruning."),
+    ("ollama", "models", "Ollama models", ["~/.ollama/models"], "review", "ollama list  # then: ollama rm <model-name>", "Models re-download with ollama pull."),
+    ("photos", "personal", "Photos library", ["~/Pictures/Photos Library.photoslibrary"], "keep", "-", "Your photos."),
+]
+# project artifacts: dir name -> (sibling file(s) required, safety, command template ({p} path, {d} parent), note)
+ARTIFACTS = {
+    "node_modules": (None, "safe", "rm -rf {p}", "npm install recreates it."),
+    ".next": (None, "safe", "rm -rf {p}", "Next.js build cache."),
+    ".dart_tool": ("pubspec.yaml", "safe", "cd {d} && flutter clean", "Regenerated by flutter pub get."),
+    "Pods": ("Podfile", "safe", "rm -rf {p}", "pod install recreates it."),
+    ".gradle": (("build.gradle", "build.gradle.kts", "settings.gradle", "settings.gradle.kts"), "safe", "rm -rf {p}", "Project Gradle cache."),
+    "target": ("Cargo.toml", "safe", "cd {d} && cargo clean", "Rust build output."),
+    "build": (("pubspec.yaml", "package.json", "build.gradle", "build.gradle.kts", "settings.gradle"), "safe", "rm -rf {p}", "Build output."),
+    ".venv": (None, "review", "rm -rf {p}", "Python virtualenv: recreate with python3 -m venv and reinstall."),
+}
+
+
+def du_bytes(path, timeout=STO_TIMEOUT):
+    """Low-priority `du -skx` (one filesystem, never follows symlinks). None if missing/unreadable; raises TimeoutExpired."""
+    try:
+        out = subprocess.run(["nice", "-n", "19", "du", "-skx", path], capture_output=True, text=True, timeout=timeout).stdout
+        return int(out.split()[0]) * 1024
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def _entries(d):
+    try:
+        return list(os.scandir(d))
+    except OSError:
+        return []
+
+
+def _isdir(e):
+    try:
+        return e.is_dir(follow_symlinks=False)
+    except OSError:
+        return False
+
+
+def sweep_projects(roots, home):
+    """Find artifact dirs and agent worktrees under roots. Depth-capped, skips .git, never follows symlinks or crosses filesystems."""
+    found = []
+    for r in roots:
+        r = os.path.join(home, r[2:]) if r.startswith("~/") else r
+        try:
+            if not os.path.isdir(r) or os.path.islink(r):
+                continue
+            dev = os.stat(r).st_dev
+        except OSError:
+            continue
+        stack = [(r, 0)]
+        while stack:
+            d, depth = stack.pop()
+            ents = _entries(d)
+            names = {e.name for e in ents}
+            for e in ents:
+                if not _isdir(e) or e.name == ".git":
+                    continue
+                try:
+                    if e.stat(follow_symlinks=False).st_dev != dev:
+                        continue
+                except OSError:
+                    continue
+                if e.name == ".claude":
+                    for w in _entries(os.path.join(e.path, "worktrees")):
+                        if _isdir(w):
+                            found.append({"kind": "worktree", "path": w.path, "repo": d, "name": w.name})
+                    continue
+                spec = ARTIFACTS.get(e.name)
+                if spec and (spec[0] is None or names & set([spec[0]] if isinstance(spec[0], str) else spec[0])):
+                    found.append({"kind": e.name, "path": e.path, "repo": d, "name": e.name})
+                elif depth + 1 < MAX_DEPTH:
+                    stack.append((e.path, depth + 1))
+    return found
+
+
+def downloads_installers(home, now=None):
+    """(bytes, count) of installer/archive files in ~/Downloads older than 7 days (not recursive)."""
+    now = now or time.time()
+    total, n = 0, 0
+    for e in _entries(os.path.join(home, "Downloads")):
+        try:
+            st = e.stat(follow_symlinks=False)
+            if e.is_file(follow_symlinks=False) and e.name.lower().endswith(INSTALLER_EXT) and now - st.st_mtime > 7 * 86400:
+                total, n = total + st.st_size, n + 1
+        except OSError:
+            pass
+    return total, n
+
+
+def disk_info():
+    """total/used/free from statfs; purgeable = 'available for important usage' minus free (None if unavailable)."""
+    du = shutil.disk_usage("/")
+    out = {"total": du.total, "used": du.total - du.free, "free": du.free, "purgeable": None}
+    js = ('ObjC.import("Foundation"); var r=$.NSURL.fileURLWithPath("/").resourceValuesForKeysError('
+          '$(["NSURLVolumeAvailableCapacityForImportantUsageKey"]),$()); '
+          'ObjC.deepUnwrap(r)["NSURLVolumeAvailableCapacityForImportantUsageKey"]')
+    try:
+        out["purgeable"] = max(0, int(float(sh(["osascript", "-l", "JavaScript", "-e", js], 10).strip())) - du.free)
+    except ValueError:
+        pass
+    return out
+
+
+def swap_files_bytes(vm="/System/Volumes/VM"):
+    total = 0
+    for e in _entries(vm):
+        if e.name.startswith(("swapfile", "sleepimage")):
+            try:
+                total += e.stat(follow_symlinks=False).st_blocks * 512
+            except OSError:
+                pass
+    return total
+
+
+def net_nested(items):
+    """An item inside another item's path is already counted there: subtract it from the parent so totals don't double-count."""
+    for p in items:
+        pre = p["path"].rstrip("/") + "/"
+        inner = sum(c["bytes"] for c in items if c is not p and c["path"].startswith(pre))
+        if inner:
+            p["bytes"] = max(0, p["bytes"] - inner)
+            p["note"] = (p["note"] + " " if p["note"] else "") + "Excludes items listed separately."
+    return items
+
+
+def scan_storage(home=None, roots=None, now=None, du=None, publish=None):
+    """One full scan -> the /api/storage payload. Sequential and niced; one huge dir can only cost STO_TIMEOUT."""
+    home = home or os.path.expanduser("~")
+    roots = CFG["storage_roots"] if roots is None else roots
+    du = du or du_bytes
+    t0 = time.time()
+    deadline = t0 + STO_BUDGET
+    items, skipped = [], []
+    q = shlex.quote
+
+    def measure(path):
+        if time.time() > deadline:
+            skipped.append(path)
+            return None
+        try:
+            return du(path)
+        except subprocess.TimeoutExpired:
+            skipped.append(path)
+            return None
+
+    def add(id, cat, label, path, nbytes, safety, cmd, note=""):
+        if nbytes:
+            items.append({"id": id, "category": cat, "label": label, "path": path, "bytes": nbytes,
+                          "safety": safety, "command": cmd, "note": note})
+
+    for id, cat, label, paths, safety, cmd, note in CATALOG:
+        total, shown = 0, None
+        for pth in paths:
+            full = os.path.join(home, pth[2:]) if pth.startswith("~/") else pth
+            if os.path.islink(full) or not os.path.isdir(full):
+                continue
+            b = measure(full)
+            if b:
+                total, shown = total + b, shown or full
+        if id == "coresim-devices" and total and shutil.which("xcrun"):
+            n = len(re.findall(r"\([0-9A-Fa-f-]{36}\)", sh(["xcrun", "simctl", "list", "devices", "unavailable"], 20)))
+            note = ("%d unavailable simulator%s (orphaned). " % (n, "s" * (n != 1)) if n else "No unavailable simulators. ") + note
+        add(id, cat, label, shown or paths[0], total, safety, cmd, note)
+    inst = downloads_installers(home, now)
+    add("downloads-installers", "downloads", "Old installers in Downloads (%d)" % inst[1], os.path.join(home, "Downloads"), inst[0], "review",
+        "find ~/Downloads -maxdepth 1 \\( -name '*.dmg' -o -name '*.pkg' -o -name '*.zip' -o -name '*.xip' -o -name '*.ipa' -o -name '*.apk' \\) -mtime +7 -ls",
+        "Older than 7 days. Review the list; append -delete to remove them.")
+    swap = swap_files_bytes()
+    add("vm-swap", "system", "VM volume (swap files, sleepimage)", "/System/Volumes/VM", swap, "keep", "-", "Shrinks after a reboot. Not user-deletable.")
+    proj = []
+    for f in sweep_projects(roots, home):
+        b = measure(f["path"])
+        if not b or b < PROJ_MIN:
+            continue
+        pid = "proj-" + hashlib.sha1(f["path"].encode()).hexdigest()[:10]
+        if f["kind"] == "worktree":
+            proj.append((pid, "worktree", "Agent worktree " + f["name"], f["path"], b, "review",
+                         "git -C %s worktree remove --force %s" % (q(f["repo"]), q(os.path.relpath(f["path"], f["repo"]))),
+                         "Check for uncommitted work and unpushed branches first."))
+        else:
+            _, safety, cmd, note = ARTIFACTS[f["kind"]]
+            if f["kind"] == "build" and os.path.exists(os.path.join(f["repo"], "pubspec.yaml")):
+                cmd = "cd {d} && flutter clean"
+            proj.append((pid, "project", "%s in %s" % (f["kind"], os.path.basename(f["repo"])), f["path"], b, safety,
+                         cmd.format(p=q(f["path"]), d=q(f["repo"])), note))
+    for row in sorted(proj, key=lambda r: -r[4])[:PROJ_CAP]:
+        add(*row)
+    items = sorted(net_nested(items), key=lambda i: -i["bytes"])
+    top_home = []
+
+    def payload():
+        done = time.time()
+        return {"scanned_at": done, "duration_s": round(done - t0, 1), "running": False, "disk": disk_info(),
+                "swap_files_gb": round(swap / 1024 ** 3, 1), "items": items,
+                "safe_total_bytes": sum(i["bytes"] for i in items if i["safety"] == "safe"),
+                "review_total_bytes": sum(i["bytes"] for i in items if i["safety"] == "review"),
+                "top_home": top_home, "skipped": skipped}
+    if publish:
+        publish(payload())  # items are final here; the slow whole-home du below only adds top_home
+    try:
+        out = subprocess.run(["nice", "-n", "19", "du", "-d1", "-kx", home], capture_output=True, text=True, timeout=STO_HOME_TIMEOUT).stdout
+        rows = [ln.split("\t", 1) for ln in out.splitlines() if "\t" in ln]
+        top_home = sorted(({"path": p, "bytes": int(k) * 1024} for k, p in rows if k.isdigit() and p.rstrip("/") != home.rstrip("/")),
+                          key=lambda r: -r["bytes"])[:15]
+    except (subprocess.TimeoutExpired, OSError):
+        skipped.append(home)
+    return payload()
+
+
+def storage_loop():
+    STO_WAKE.wait(STO_FIRST)
+    while True:
+        STO_WAKE.clear()
+        with LOCK:
+            STORAGE["running"] = True
+        try:
+            def publish(r):
+                with LOCK:
+                    STORAGE["result"] = r
+            res = scan_storage(publish=publish)
+            publish(res)
+        except Exception as e:
+            print("storage scan error", type(e).__name__, e, flush=True)
+        with LOCK:
+            STORAGE["running"], STORAGE["finished"] = False, time.time()
+        STO_WAKE.wait(STO_EVERY)
+
+
+def storage_rescan(now=None):
+    """Schedule a scan unless one is running or the last finished under STO_MIN_GAP ago. -> {"scheduled": bool}"""
+    now = time.time() if now is None else now
+    with LOCK:
+        if STORAGE["running"] or now - STORAGE["finished"] <= STO_MIN_GAP:
+            return {"scheduled": False}
+        STORAGE["running"] = True
+    STO_WAKE.set()
+    return {"scheduled": True}
+
+
+def storage_payload():
+    with LOCK:
+        res, running = STORAGE["result"], STORAGE["running"]
+    if not res:
+        return {"scanned_at": None, "duration_s": None, "running": running, "disk": None, "swap_files_gb": None, "items": [],
+                "safe_total_bytes": 0, "review_total_bytes": 0, "top_home": []}
+    return dict(res, running=running)
+
+
+def storage_summary():
+    p = storage_payload()
+    return {"scanned_at": p["scanned_at"], "running": p["running"], "safe_total_bytes": p["safe_total_bytes"],
+            "review_total_bytes": p["review_total_bytes"],
+            "top": [{k: i[k] for k in ("label", "path", "bytes", "safety", "command")} for i in p["items"] if i["safety"] != "keep"][:3]}
+
+
+def storage_hint():
+    """Biggest safe-to-clean item as text, for the disk_low alert (None until a scan exists)."""
+    safe = [i for i in storage_payload()["items"] if i["safety"] == "safe"]
+    return "%s (%.1f GB): %s" % (safe[0]["label"], safe[0]["bytes"] / 1024 ** 3, safe[0]["command"]) if safe else None
+
+
 def api_stats(s):
     pct = s["cpu"]["pct"]
     conds = conditions(s, STATE["cpu_streak"] if pct > CFG["cpu_pct"] else 0, CFG)  # live CPU, not the 30s-old streak
@@ -558,6 +873,13 @@ def api_stats(s):
     with LOCK:
         s["alerts"] = list(reversed(ALERTS))
     s["config"] = CFG
+    st = s["storage"] = storage_summary()
+    if st["safe_total_bytes"] > 5 * 1024 ** 3:
+        s["suggestions"] = list(s.get("suggestions") or []) + [{
+            "id": "storage-reclaimable", "severity": "info",
+            "title": "Reclaimable storage ~%.0f GB" % (st["safe_total_bytes"] / 1024 ** 3),
+            "detail": "Safe caches and build output. Biggest: " + ", ".join(i["label"] for i in st["top"] if i["safety"] == "safe"),
+            "pids": [], "mem_mb": 0, "command": "curl -s http://127.0.0.1:%d/api/storage" % PORT}]
     s["error"] = SNAP.get("err")
     return s
 
@@ -579,9 +901,13 @@ class H(BaseHTTPRequestHandler):
         if self.headers.get("Host", "").split(":")[0] not in ("127.0.0.1", "localhost"):
             return self.send_error(403)
         path = self.path.split("?")[0]
-        if path not in ("/", "/api/stats", "/api/history"):
+        if path not in ("/", "/api/stats", "/api/history", "/api/storage", "/api/storage/rescan"):
             return self.send_error(404)
         touch()
+        if path == "/api/storage":
+            return self.reply(200, json.dumps(storage_payload()).encode(), "application/json")
+        if path == "/api/storage/rescan":
+            return self.reply(200, json.dumps(storage_rescan()).encode(), "application/json")
         if path == "/":
             with open(os.path.join(HERE, "index.html"), "rb") as f:
                 return self.reply(200, f.read(), "text/html; charset=utf-8")
@@ -609,6 +935,7 @@ if __name__ == "__main__":
     else:
         threading.Thread(target=refresher, daemon=True).start()
         threading.Thread(target=monitor, daemon=True).start()
+        threading.Thread(target=storage_loop, daemon=True).start()
         srv = ThreadingHTTPServer((HOST, PORT), H)
         print("macdash listening on http://%s:%d" % (HOST, PORT), flush=True)
         srv.serve_forever()

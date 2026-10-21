@@ -56,6 +56,34 @@ h2::before{content:"[ "}h2::after{content:" ]"}h2 span{float:right;font-weight:4
 #ports{max-height:300px;overflow:auto}
 #ports div{display:grid;grid-template-columns:64px 1fr auto;gap:10px;padding:4px 0;border-top:1px solid var(--line)}
 #ports div:first-child{border-top:0}#ports span:nth-child(2){overflow:hidden;text-overflow:ellipsis;text-transform:none;white-space:nowrap}
+/* storage */
+#b-sto{grid-column:span 12}
+.sto-h{display:grid;grid-template-columns:minmax(0,3fr) minmax(0,2fr);gap:0 28px;align-items:end}
+.sto-h .bar{margin:10px 0 8px}
+.s-purge{background:repeating-linear-gradient(135deg,var(--fg) 0 2px,var(--bg) 2px 5px)}
+.s-used{background:var(--fg)}
+#sto-rec{font:900 clamp(1.6rem,3.2vw,2.6rem)/.9 var(--sans);letter-spacing:-.04em;text-align:right}
+#sto-rec small{display:block;font:700 11px/1.5 var(--mono);letter-spacing:.06em;color:var(--dim);margin-top:6px}
+.sto-c{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:14px 0 10px}
+.sto-c .sp-l{flex:1 1 200px;color:var(--dim);text-align:right;padding-left:6px}
+#sto-list{max-height:560px;overflow:auto;border:1px solid var(--line)}
+.si{display:grid;grid-template-columns:minmax(0,1fr) 120px 74px 74px;gap:2px 12px;align-items:start;padding:8px 10px;border-top:1px solid var(--line);text-transform:none;letter-spacing:.02em}
+.si:first-child{border-top:0}
+.si .ti{font-weight:700;text-transform:uppercase;letter-spacing:.06em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.si .ti em{font-style:normal;font-weight:400;color:var(--dim);margin-left:8px}
+.si .pa,.si code{grid-column:1;font:inherit;color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.si .sz{grid-column:2;grid-row:1/span 3;text-align:right}
+.si .sz b{display:block;font-size:14px}
+.si .sz i{display:block;height:4px;background:var(--fg);margin:5px 0 0 auto}
+.si .bd{grid-column:3;grid-row:1/span 3}
+.si button{grid-column:4;grid-row:1/span 3;min-height:28px;padding:4px 8px}
+.bd span{display:inline-block;font:700 11px var(--mono);text-transform:uppercase;padding:2px 5px;border:1px solid var(--fg)}
+.bd .safe{background:var(--fg);color:var(--bg)}
+.bd .review{border-color:var(--red);color:var(--red)}
+.bd .keep{border-color:var(--dim);color:var(--dim)}
+button:disabled{color:var(--dim);border-color:var(--dim);cursor:default}
+button:disabled:active{transform:none}
+#sto-scan:disabled{animation:blink 1.1s steps(1) infinite}
 /* segmented gauge */
 .seg{display:grid;grid-template-columns:repeat(20,1fr);gap:2px;height:18px;margin-top:14px}
 .seg i{background:#1c1c1c}.seg i.on{background:var(--fg)}.seg.low i.on{background:var(--red)}
@@ -99,9 +127,11 @@ td.cmd{max-width:380px;overflow:hidden;text-overflow:ellipsis;color:var(--dim);t
 footer{padding:10px 16px;color:var(--dim);display:flex;justify-content:space-between;gap:12px}
 #cur{animation:blink 1.1s steps(1) infinite}
 @keyframes blink{50%{opacity:0}}
-@media (prefers-reduced-motion:reduce){#cur{animation:none}.bar i,button{transition:none}}
+@media (prefers-reduced-motion:reduce){#cur,#sto-scan:disabled{animation:none}.bar i,button{transition:none}}
 @media (max-width:1100px){#b-batt,#b-cpu,#b-disk,#b-sys{grid-column:span 6}#b-mem,#b-alerts,#b-clean,#b-ports{grid-column:span 12}}
 @media (max-width:640px){
+ .sto-h{grid-template-columns:1fr;gap:12px}#sto-rec{text-align:left}.sto-c .sp-l{text-align:left;padding:0;flex-basis:100%;order:9}
+ .si{grid-template-columns:minmax(0,1fr) auto;gap:3px 10px}.si .ti,.si .pa,.si code{grid-column:1/-1;white-space:normal;overflow-wrap:anywhere}.si .sz{grid-column:1;grid-row:4;text-align:left}.si .sz i{margin-left:0}.si .bd{grid-column:2;grid-row:4}.si button{grid-column:1/-1;grid-row:5}
  #strip{grid-template-columns:1fr;gap:10px}#clock{text-align:left}
  #b-batt,#b-cpu,#b-disk,#b-sys,#b-mem,#b-alerts{grid-column:span 12}
  .sp{grid-template-columns:1fr;background:none;gap:14px}.sp>div,.sp>div+div{padding:0}
@@ -115,7 +145,7 @@ footer{padding:10px 16px;color:var(--dim);display:flex;justify-content:space-bet
 <header id="strip" class="OK">
   <div id="verdict">--</div>
   <div id="reason" aria-live="polite"></div>
-  <div id="clock" class="num">MACDASH ® REV 1.1<br><span id="stamp">LINK: WAITING</span></div>
+  <div id="clock" class="num">MACDASH ® REV 1.2<br><span id="stamp">LINK: WAITING</span></div>
 </header>
 <main>
   <section id="b-batt"><h2><span>BAT-01</span>BATTERY</h2>
@@ -158,6 +188,17 @@ footer{padding:10px 16px;color:var(--dim);display:flex;justify-content:space-bet
   </section>
   <section id="b-ports"><h2><span>NET-10</span>LISTENING PORTS <b id="pcount" class="num"></b></h2>
     <div id="ports"></div>
+  </section>
+  <section id="b-sto"><h2><span>STO-11</span>STORAGE</h2>
+    <div class="sto-h"><div>
+      <div class="big num" id="sfree">--<small>GB FREE</small></div>
+      <div class="bar" id="sbar" role="img" aria-label="Disk usage"><i class="s-used"></i><i class="s-purge"></i></div>
+      <div class="leg num" id="sleg"></div></div>
+      <div id="sto-rec">--</div></div>
+    <div class="sto-c"><button data-f="all" aria-pressed="true">ALL</button><button data-f="safe" aria-pressed="false">SAFE</button><button data-f="review" aria-pressed="false">REVIEW</button>
+      <button id="sto-scan">RESCAN</button><span class="sp-l num" id="sto-age" aria-live="polite">--</span></div>
+    <div id="sto-list"></div>
+    <p class="note">&gt;&gt;&gt; SUGGESTED - MACDASH NEVER DELETES. SIZES ARE MEASURED IN THE BACKGROUND, ONE LOW-PRIORITY SCAN EVERY 6H. REVIEW ITEMS: CHECK EACH ONE BEFORE YOU RUN ITS COMMAND.</p>
   </section>
   <section id="b-proc"><h2><span>TSK-07</span>TASKS RUNNING</h2>
     <div class="ctl"><input id="q" type="search" placeholder="FILTER >" autocomplete="off" spellcheck="false" aria-label="Filter processes">
@@ -250,6 +291,38 @@ async function hist(){
   setTimeout(hist,15000);
 }
 hist();
+
+/* storage review */
+let sto=null,stoF="all";
+const fb=b=>b>=1024**3?(b/1024**3).toFixed(1)+" GB":Math.max(0,Math.round(b/1048576))+" MB";
+const ago=t=>{const d=Math.max(0,Date.now()/1000-t);return d<90?Math.round(d)+"S":d<5400?Math.round(d/60)+"M":d<172800?Math.round(d/3600)+"H":Math.round(d/86400)+"D"};
+function stoRender(){
+  if(!sto)return;
+  const d=sto.disk,run=sto.running,items=sto.items||[];
+  if(d){$("sfree").innerHTML=(d.free/1024**3).toFixed(0)+"<small>GB FREE</small>";
+    const pu=d.purgeable||0,bi=$("sbar").children,p=x=>(100*x/d.total).toFixed(2)+"%";
+    bi[0].style.width=p(d.used-pu);bi[1].style.width=p(pu);
+    $("sleg").innerHTML=[["s-used","USED",fb(d.used-pu)],["s-purge","PURGEABLE",d.purgeable==null?"N/A":fb(pu)],["s-free","FREE",fb(d.free)],["","TOTAL",fb(d.total)]]
+      .concat(sto.swap_files_gb?[["","SWAP FILES",sto.swap_files_gb+" GB"]]:[]).map(r=>`<div><i class="${esc(r[0])}"></i>${esc(r[1])}<span>${esc(r[2])}</span></div>`).join("")}
+  $("sto-rec").innerHTML=sto.scanned_at?"~"+esc(fb(sto.safe_total_bytes))+" SAFE<small>RECLAIMABLE &middot; "+esc(fb(sto.review_total_bytes))+" TO REVIEW</small>":"--";
+  $("sto-age").innerHTML=sto.scanned_at?"LAST SCAN "+esc(ago(sto.scanned_at))+" AGO (TOOK "+esc(Math.round(sto.duration_s))+"S)"+(run?' // REFRESHING':""):
+    run?'FIRST SCAN RUNNING':"NO SCAN YET - FIRST ONE RUNS ~60S AFTER START";
+  const b=$("sto-scan");b.disabled=!!run;b.textContent=run?"SCANNING...":"RESCAN";
+  const rows=items.filter(i=>stoF==="all"||i.safety===stoF),mx=Math.max(1,...rows.map(i=>i.bytes));
+  $("sto-list").innerHTML=rows.length?rows.map(i=>`<div class="si" data-id="${esc(i.id)}"><span class="ti" title="${esc(i.note||i.label)}">${esc(i.label)}<em>${esc(i.category)}</em></span><span class="sz num"><b>${esc(fb(i.bytes))}</b><i style="width:${Math.max(2,Math.round(100*i.bytes/mx))}%"></i></span><span class="bd"><span class="${esc(i.safety)}">${esc(i.safety)}</span></span><button data-id="${esc(i.id)}"${i.command&&i.command!=="-"?"":" hidden"}>COPY</button><span class="pa" title="${esc(i.path)}">${esc(i.path)}</span>${i.command&&i.command!=="-"?`<code title="${esc(i.command)}">$ ${esc(i.command)}</code>`:""}</div>`).join(""):
+    '<div class="si dim">'+(sto.scanned_at?"NOTHING IN THIS FILTER":run?"FIRST SCAN IN PROGRESS...":"NO DATA YET")+"</div>"}
+$("b-sto").querySelector(".sto-c").onclick=e=>{const b=e.target.closest("button");if(!b)return;
+  if(b.dataset.f){stoF=b.dataset.f;document.querySelectorAll("[data-f]").forEach(x=>x.setAttribute("aria-pressed",x===b));stoRender()}
+  else if(b.id==="sto-scan"){b.disabled=true;fetch("/api/storage/rescan",{cache:"no-store"}).catch(()=>{}).then(()=>stoPoll(true))}};
+$("sto-list").onclick=e=>{const b=e.target.closest("button"),x=b&&sto.items.find(i=>i.id===b.dataset.id);if(!x)return;
+  copy(x.command).then(()=>b.textContent="COPIED",()=>b.textContent="COPY FAILED");setTimeout(()=>b.textContent="COPY",1400)};
+let stoT=0;
+async function stoPoll(now){
+  clearTimeout(stoT);
+  try{sto=await(await fetch("/api/storage",{cache:"no-store"})).json();stoRender()}catch(e){}
+  stoT=setTimeout(stoPoll,sto&&sto.running?5000:60000);
+}
+stoPoll();
 $("grp").onclick=e=>{grouped=!grouped;e.currentTarget.setAttribute("aria-pressed",grouped);table()};
 async function poll(){
   try{const r=await fetch("/api/stats",{cache:"no-store"});const j=await r.json();if(!r.ok||!j.verdict){$("stamp").textContent=j.error?"WAITING: "+j.error:"LINK: WAITING FOR FIRST SAMPLE"}else{data=j;render(data)}}

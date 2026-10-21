@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.2.0
+
+- Storage review: a background scanner (own thread, niced `du`, per-path timeout, first scan about 60s after start, then every 6h, or on demand) measures a built-in catalog of caches and junk (Xcode, simulators, Android, Gradle, npm/pnpm/yarn/pip/pub/CocoaPods/Homebrew, Library caches and logs, Trash, old installers, iOS backups, Docker/Colima, Ollama) plus project build artifacts and stale agent worktrees under configurable `storage_roots`.
+- STORAGE panel (STO-11): disk bar with purgeable space and swap files, reclaimable SAFE versus REVIEW totals, sortable list with SAFE / REVIEW / KEEP badges, COPY command, filter tabs and RESCAN.
+- `GET /api/storage` and `GET /api/storage/rescan`; `/api/stats` gains a `storage` summary and a "Reclaimable storage" suggestion above 5 GB; the low-disk alert names the biggest safe item.
+- Commands are suggestions only. macdash still never deletes or runs anything.
+- Skill: new "Storage review" section.
+
 ## 1.1.0
 
 - Cleanup suggestions (stale dev servers, simulators, VMs, Gradle daemons, hung `flutter_tester`/`git`, duplicate Dart analysis servers). Commands are shown, never run.
