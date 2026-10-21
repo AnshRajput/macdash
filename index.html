@@ -1,0 +1,204 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>MACDASH // TELEMETRY</title>
+<style>
+:root{--bg:#0a0a0a;--panel:#0f0f0f;--line:#2a2a2a;--fg:#eaeaea;--dim:#7d7d7d;--red:#ff2a2a;--ok:#4af626;
+--mono:ui-monospace,"JetBrains Mono","SF Mono",Menlo,monospace;--sans:"Helvetica Neue",Arial,sans-serif;--out:cubic-bezier(.23,1,.32,1)}
+*{box-sizing:border-box;margin:0;border-radius:0}
+html{background:var(--bg);color:var(--fg);font:12px/1.35 var(--mono);letter-spacing:.04em;text-transform:uppercase;-webkit-text-size-adjust:100%}
+body{min-height:100vh;background:repeating-linear-gradient(0deg,transparent 0 2px,rgba(0,0,0,.18) 2px 4px)}
+[hidden]{display:none!important}
+b,strong{font-weight:700}
+.num{font-variant-numeric:tabular-nums}
+.dim{color:var(--dim)}
+.red{color:var(--red)}
+/* verdict strip */
+#strip{display:grid;grid-template-columns:auto 1fr auto;gap:0 20px;align-items:center;padding:14px 16px;border-bottom:2px solid var(--fg)}
+#verdict{font:900 clamp(2.4rem,7vw,5.5rem)/.85 var(--sans);letter-spacing:-.05em;padding:6px 12px 4px;border:2px solid var(--fg)}
+#strip.STRAINED #verdict{background:var(--fg);color:var(--bg)}
+#strip.CRITICAL #verdict{background:var(--red);border-color:var(--red);color:var(--bg)}
+#strip.OK #verdict::before{content:"";display:inline-block;width:.18em;height:.18em;background:var(--ok);margin-right:.2em;vertical-align:.12em}
+#reason{font-size:13px;line-height:1.5}
+#reason div::before{content:">>> ";color:var(--dim)}
+#clock{text-align:right;color:var(--dim)}
+/* grid */
+main{display:grid;grid-template-columns:repeat(12,1fr);gap:1px;background:var(--line);border-bottom:1px solid var(--line)}
+section{background:var(--bg);padding:12px 14px;min-width:0}
+h2{font:700 11px/1 var(--mono);letter-spacing:.14em;color:var(--dim);margin-bottom:12px}
+h2::before{content:"[ "}h2::after{content:" ]"}h2 span{float:right;font-weight:400}
+.big{font:900 clamp(2.6rem,5vw,4.4rem)/.85 var(--sans);letter-spacing:-.05em}
+.big small{font:700 14px var(--mono);letter-spacing:.05em;margin-left:4px;color:var(--dim)}
+.kv{display:grid;grid-template-columns:auto 1fr;gap:4px 14px;margin-top:12px}
+.kv dt{color:var(--dim)}.kv dd{text-align:right}
+#b-batt{grid-column:span 3}#b-mem{grid-column:span 5}#b-cpu{grid-column:span 4}
+#b-disk{grid-column:span 3}#b-sys{grid-column:span 3}#b-alerts{grid-column:span 6}
+#b-proc{grid-column:span 12}
+/* segmented gauge */
+.seg{display:grid;grid-template-columns:repeat(20,1fr);gap:2px;height:18px;margin-top:14px}
+.seg i{background:#1c1c1c}.seg i.on{background:var(--fg)}.seg.low i.on{background:var(--red)}
+.bar{display:flex;height:22px;border:1px solid var(--fg);margin:14px 0 8px}
+.bar i{display:block;height:100%;min-width:0;transition:width 200ms var(--out)}
+.s-wired{background:var(--fg)}
+.s-active{background:#8a8a8a}
+.s-comp{background:repeating-linear-gradient(135deg,var(--red) 0 3px,var(--bg) 3px 6px)}
+.s-inact{background:repeating-linear-gradient(90deg,#555 0 1px,transparent 1px 4px)}
+.bar.thin{height:8px;margin:6px 0 0}
+.leg{display:grid;grid-template-columns:repeat(2,1fr);gap:3px 14px}
+.leg div{display:flex;justify-content:space-between}
+.leg i{width:10px;height:10px;border:1px solid var(--fg);margin-right:8px;flex:none;align-self:center}
+.leg span{margin-left:auto}
+/* alerts */
+#alerts{max-height:260px;overflow:auto}
+#alerts div{display:grid;grid-template-columns:auto auto 1fr;gap:10px;padding:5px 0;border-top:1px solid var(--line);text-transform:none;letter-spacing:.02em}
+#alerts div:first-child{border-top:0}
+#alerts span{min-width:0;overflow-wrap:anywhere}#alerts .t{color:var(--dim)}#alerts .k{color:var(--red);text-transform:uppercase}
+/* process table */
+.ctl{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:10px}
+input,button{font:inherit;letter-spacing:inherit;text-transform:inherit;color:var(--fg);background:var(--bg);border:1px solid var(--fg);padding:7px 10px;min-height:34px}
+input{flex:1 1 180px;min-width:0}
+input::placeholder{color:var(--dim)}
+button{cursor:pointer;transition:transform 140ms var(--out)}
+button:active{transform:scale(.97)}
+button[aria-pressed=true]{background:var(--fg);color:var(--bg)}
+:focus-visible{outline:2px solid var(--red);outline-offset:1px}
+@media (hover:hover) and (pointer:fine){button:hover{background:#1c1c1c}button[aria-pressed=true]:hover{background:var(--fg)}tbody tr:hover{background:#161616}}
+.tw{overflow:auto;max-height:520px;border:1px solid var(--line)}
+table{width:100%;border-collapse:collapse}
+th,td{padding:5px 10px;text-align:left;white-space:nowrap;border-bottom:1px solid var(--line)}
+th{position:sticky;top:0;background:var(--bg);color:var(--dim);font-weight:700;cursor:pointer;user-select:none;border-bottom:1px solid var(--fg)}
+th[aria-sort]{color:var(--fg)}
+th[aria-sort=descending]::after{content:" \25BC"}th[aria-sort=ascending]::after{content:" \25B2"}
+td.r,th.r{text-align:right}
+td.nm{max-width:260px;overflow:hidden;text-overflow:ellipsis;text-transform:none}
+td.cmd{max-width:380px;overflow:hidden;text-overflow:ellipsis;color:var(--dim);text-transform:none}
+.mb{display:inline-block;height:6px;background:var(--fg);vertical-align:middle;margin-right:8px}
+footer{padding:10px 16px;color:var(--dim);display:flex;justify-content:space-between;gap:12px}
+#cur{animation:blink 1.1s steps(1) infinite}
+@keyframes blink{50%{opacity:0}}
+@media (prefers-reduced-motion:reduce){#cur{animation:none}.bar i,button{transition:none}}
+@media (max-width:1100px){#b-batt,#b-cpu,#b-disk,#b-sys{grid-column:span 6}#b-mem,#b-alerts{grid-column:span 12}}
+@media (max-width:640px){
+ #strip{grid-template-columns:1fr;gap:10px}#clock{text-align:left}
+ #b-batt,#b-cpu,#b-disk,#b-sys,#b-mem,#b-alerts{grid-column:span 12}
+ td.cmd,th.cmd,td.up,th.up{display:none}.leg{grid-template-columns:1fr}
+ td.nm{max-width:120px}.mb{display:none}th,td{padding:5px 6px}
+}
+</style>
+</head>
+<body>
+<header id="strip" class="OK">
+  <div id="verdict">--</div>
+  <div id="reason" aria-live="polite"></div>
+  <div id="clock" class="num">MACDASH ® REV 1.0<br><span id="stamp">LINK: WAITING</span></div>
+</header>
+<main>
+  <section id="b-batt"><h2><span>BAT-01</span>BATTERY</h2>
+    <div class="big num" id="bpct">--<small>%</small></div>
+    <div class="seg" id="bseg"></div>
+    <dl class="kv"><dt>STATE</dt><dd id="bstate">--</dd><dt>SOURCE</dt><dd id="bsrc">--</dd><dt>REMAINING</dt><dd id="brem" class="num">--</dd></dl>
+  </section>
+  <section id="b-mem"><h2><span>MEM-02</span>MEMORY</h2>
+    <div class="big num" id="mused">--<small>GB USED</small></div>
+    <div class="bar" id="mbar"><i class="s-wired"></i><i class="s-active"></i><i class="s-comp"></i><i class="s-inact"></i></div>
+    <div class="leg num" id="mleg"></div>
+    <dl class="kv"><dt>PRESSURE</dt><dd id="mpress">--</dd><dt>FREE (SYSTEM)</dt><dd id="mfree" class="num">--</dd>
+      <dt>SWAP</dt><dd id="swap" class="num">--</dd></dl>
+    <div class="bar thin"><i class="s-wired" id="swbar" style="width:0"></i></div>
+  </section>
+  <section id="b-cpu"><h2><span>CPU-03</span>CPU / THERMAL</h2>
+    <div class="big num" id="cpct">--<small>%</small></div>
+    <div class="bar thin"><i class="s-wired" id="cbar" style="width:0"></i></div>
+    <dl class="kv"><dt>LOAD 1/5/15</dt><dd id="load" class="num">--</dd><dt>CORES</dt><dd id="ncpu" class="num">--</dd><dt>THERMAL</dt><dd id="therm">--</dd></dl>
+  </section>
+  <section id="b-disk"><h2><span>DSK-04</span>DISK /</h2>
+    <div class="big num" id="dfree">--<small>GB FREE</small></div>
+    <div class="bar thin"><i class="s-wired" id="dbar" style="width:0"></i></div>
+    <dl class="kv"><dt>TOTAL</dt><dd id="dtot" class="num">--</dd><dt>USED</dt><dd id="dused" class="num">--</dd></dl>
+  </section>
+  <section id="b-sys"><h2><span>SYS-05</span>SYSTEM</h2>
+    <div class="big num" id="up">--</div>
+    <dl class="kv"><dt>UPTIME</dt><dd class="dim">D:H:M</dd><dt>MACOS</dt><dd id="os" class="num">--</dd><dt>PROCS SHOWN</dt><dd id="pn" class="num">--</dd></dl>
+  </section>
+  <section id="b-alerts"><h2><span>LOG-06</span>ALERTS <b id="acount" class="num"></b></h2>
+    <div id="alerts"></div>
+  </section>
+  <section id="b-proc"><h2><span>TSK-07</span>TASKS RUNNING</h2>
+    <div class="ctl"><input id="q" type="search" placeholder="FILTER >" autocomplete="off" spellcheck="false" aria-label="Filter processes">
+      <button id="grp" aria-pressed="false">GROUP BY APP</button></div>
+    <div class="tw"><table><thead id="th"></thead><tbody id="tb"></tbody></table></div>
+  </section>
+</main>
+<footer><span>127.0.0.1:7777 // READ-ONLY // POLL 3S</span><span>READY<span id="cur">_</span></span></footer>
+<script>
+const $=id=>document.getElementById(id);
+const esc=s=>String(s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const gb=mb=>(mb/1024).toFixed(1);
+let data=null,sort={k:"mem",dir:-1},grouped=false;
+const seg=$("bseg");seg.innerHTML="<i></i>".repeat(20);
+
+function render(s){
+  const v=s.verdict;$("strip").className=v.level;$("verdict").textContent=v.level;
+  $("reason").innerHTML=v.reasons.length?v.reasons.map(r=>"<div>"+esc(r)+"</div>").join(""):"<div>ALL SYSTEMS WITHIN LIMITS</div>";
+  $("stamp").textContent="LINK OK "+new Date(s.ts*1000).toLocaleTimeString([],{hour12:false});
+  const b=s.battery;
+  if(b.present){
+    $("bpct").innerHTML=b.pct+"<small>%</small>";
+    const n=Math.round(b.pct/5);[...seg.children].forEach((e,i)=>e.className=i<n?"on":"");
+    seg.className="seg"+(b.pct<20&&!b.charging?" low":"");
+    $("bstate").textContent=b.state;$("bsrc").textContent=b.ac?"AC":"BATTERY";$("brem").textContent=b.remaining||"--";
+  }else{$("bpct").innerHTML="N/A";$("bstate").textContent="NO BATTERY";$("bsrc").textContent="AC";$("brem").textContent="--";seg.className="seg";[...seg.children].forEach(e=>e.className="")}
+  const m=s.mem,used=m.wired+m.active+m.compressed,p=x=>(100*x/m.total).toFixed(2)+"%";
+  $("mused").innerHTML=gb(used)+"<small>/ "+gb(m.total)+" GB USED</small>";
+  const bi=$("mbar").children;bi[0].style.width=p(m.wired);bi[1].style.width=p(m.active);bi[2].style.width=p(m.compressed);bi[3].style.width=p(m.inactive);
+  $("mleg").innerHTML=[["s-wired","WIRED",m.wired],["s-active","ACTIVE",m.active],["s-comp","COMPRESSED",m.compressed],["s-inact","INACTIVE",m.inactive],["s-free","FREE",m.free]]
+    .map(r=>`<div><i class="${r[0]}"></i>${r[1]}<span>${gb(r[2])} GB</span></div>`).join("");
+  const pr=$("mpress");pr.textContent=m.pressure;pr.className=m.pressure_level>=4?"red":"";
+  $("mfree").textContent=m.free_pct==null?"--":m.free_pct+"%";
+  $("swap").textContent=s.swap.total?`${gb(s.swap.used)} / ${gb(s.swap.total)} GB (${s.swap.pct}%)`:"NONE";
+  $("swbar").style.width=s.swap.pct+"%";
+  $("cpct").innerHTML=Math.round(s.cpu.pct)+"<small>%</small>";$("cbar").style.width=s.cpu.pct+"%";
+  $("load").textContent=s.cpu.load.map(x=>x.toFixed(2)).join(" ");$("ncpu").textContent=s.cpu.ncpu;
+  const t=$("therm");t.textContent=s.thermal.name;t.className=s.thermal.level>=2?"red":"";
+  const d=s.disk,dg=x=>(x/1e9).toFixed(0);
+  $("dfree").innerHTML=dg(d.free)+"<small>GB FREE</small>";$("dtot").textContent=dg(d.total)+" GB";$("dused").textContent=dg(d.total-d.free)+" GB";
+  $("dbar").style.width=(100*(d.total-d.free)/d.total)+"%";
+  if(s.uptime!=null){const u=s.uptime,dd=Math.floor(u/86400),h=Math.floor(u%86400/3600),mi=Math.floor(u%3600/60);
+    $("up").textContent=[dd,h,mi].map(x=>String(x).padStart(2,"0")).join(":")}
+  $("os").textContent=s.os;$("pn").textContent=s.procs.length;
+  $("acount").textContent=s.alerts.length?"("+s.alerts.length+")":"";
+  $("alerts").innerHTML=s.alerts.length?s.alerts.map(a=>`<div><span class="t num">${new Date(a.ts*1000).toLocaleTimeString([],{hour12:false})}</span><span class="k">${esc(a.type)}</span><span>${esc(a.text)}</span></div>`).join(""):'<span class="dim">NO ALERTS SINCE LAUNCH</span>';
+  table();
+}
+function cols(){return grouped
+  ?[["name","NAME"],["n","PROCS","r"],["mem","MEM MB","r"],["cpu","CPU %","r"]]
+  :[["name","NAME"],["pid","PID","r"],["mem","MEM MB","r"],["cpu","CPU %","r"],["etime","UP","r up"],["cmd","COMMAND","cmd"]]}
+function table(){
+  if(!data)return;
+  const c=cols(),q=$("q").value.trim().toLowerCase();
+  if(!c.some(x=>x[0]===sort.k))sort={k:"mem",dir:-1};
+  $("th").innerHTML="<tr>"+c.map(x=>`<th data-k="${x[0]}" class="${x[2]||""}"${sort.k===x[0]?` aria-sort="${sort.dir<0?"descending":"ascending"}"`:""}>${x[1]}</th>`).join("")+"</tr>";
+  let rows=(grouped?data.apps:data.procs).filter(r=>!q||(r.name+" "+(r.cmd||"")+" "+(r.pid||"")).toLowerCase().includes(q));
+  const k=sort.k;rows=[...rows].sort((a,b)=>(typeof a[k]==="string"?a[k].localeCompare(b[k]):a[k]-b[k])*sort.dir);
+  const mx=Math.max(1,...rows.map(r=>r.mem));
+  $("tb").innerHTML=rows.map(r=>{
+    const mem=`<td class="r num"><span class="mb" style="width:${Math.round(60*r.mem/mx)}px"></span>${r.mem.toFixed(0)}</td>`;
+    const cpu=`<td class="r num${r.cpu>=50?" red":""}">${r.cpu.toFixed(1)}</td>`;
+    return grouped?`<tr><td class="nm">${esc(r.name)}</td><td class="r num">${r.n}</td>${mem}${cpu}</tr>`
+      :`<tr><td class="nm" title="${esc(r.name)}">${esc(r.name)}</td><td class="r num">${r.pid}</td>${mem}${cpu}<td class="r num up">${esc(r.etime)}</td><td class="cmd" title="${esc(r.cmd)}">${esc(r.cmd)}</td></tr>`}).join("")
+    ||'<tr><td colspan="6" class="dim">NO MATCH</td></tr>';
+}
+$("th").onclick=e=>{const k=e.target.closest("th")?.dataset.k;if(!k)return;sort=sort.k===k?{k,dir:-sort.dir}:{k,dir:k==="name"||k==="cmd"?1:-1};table()};
+$("q").oninput=table;
+$("grp").onclick=e=>{grouped=!grouped;e.currentTarget.setAttribute("aria-pressed",grouped);table()};
+async function poll(){
+  try{const r=await fetch("/api/stats",{cache:"no-store"});data=await r.json();render(data)}
+  catch(e){$("stamp").textContent="LINK LOST";$("strip").className="CRITICAL";$("verdict").textContent="NO LINK"}
+  setTimeout(poll,3000);
+}
+poll();
+</script>
+</body>
+</html>
