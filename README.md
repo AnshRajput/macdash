@@ -40,11 +40,11 @@ Then just ask: *"why is my Mac lagging?"*, *"what's eating my RAM?"*, or *"what'
 | Memory | Wired / active / compressed / inactive / free, memory pressure, swap |
 | CPU / thermal | Overall %, load averages, cores, thermal state (nominal → critical) |
 | Disk / system | Free space, uptime, macOS version |
-| Battery health | Cycle count, condition, maximum capacity (API) |
-| Network | Live in/out bytes per second (API) |
-| Listening ports | Every TCP listener with its pid and command (API) |
-| Cleanup suggestions | Stale dev servers, booted simulators, VMs, Gradle daemons, hung `flutter_tester`/`git`, duplicate Dart analysis servers, memory leaks, each with a command to review and run yourself (API) |
-| History | Last 720 samples (about 2h while viewed, longer idle) of CPU, memory, swap, pressure, battery and network samples (API) |
+| Battery health | Cycle count, condition, maximum capacity |
+| Network | Live in/out bytes per second |
+| Listening ports | Every TCP listener with its pid and command |
+| Cleanup suggestions | Stale dev servers, booted simulators, VMs, Gradle daemons, hung `flutter_tester`/`git`, duplicate Dart analysis servers, memory leaks, each with a command to review and run yourself (with a COPY button; macdash never runs them) |
+| History | Last 720 samples (about 2h while viewed, longer idle) of CPU, memory, swap, pressure, battery and network samples |
 | Alerts | The last 50 alerts |
 | Tasks running | Sortable, filterable process table (memory, CPU, uptime, full command) with a group-by-app toggle |
 

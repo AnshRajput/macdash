@@ -144,7 +144,7 @@ footer{padding:10px 16px;color:var(--dim);display:flex;justify-content:space-bet
   </section>
   <section id="b-sys"><h2><span>SYS-05</span>SYSTEM</h2>
     <div class="big num" id="up">--</div>
-    <dl class="kv"><dt>UPTIME</dt><dd class="dim">D:H:M</dd><dt>MACOS</dt><dd id="os" class="num">--</dd><dt>PROCS SHOWN</dt><dd id="pn" class="num">--</dd></dl>
+    <dl class="kv"><dt>UPTIME</dt><dd class="dim">SINCE BOOT</dd><dt>MACOS</dt><dd id="os" class="num">--</dd><dt>PROCS SHOWN</dt><dd id="pn" class="num">--</dd></dl>
   </section>
   <section id="b-alerts"><h2><span>LOG-06</span>ALERTS <b id="acount" class="num"></b></h2>
     <div id="alerts"></div>
@@ -202,7 +202,7 @@ function render(s){
   $("dfree").innerHTML=dg(d.free)+"<small>GB FREE</small>";$("dtot").textContent=dg(d.total)+" GB";$("dused").textContent=dg(d.total-d.free)+" GB";
   $("dbar").style.width=(100*(d.total-d.free)/d.total)+"%";
   if(s.uptime!=null){const u=s.uptime,dd=Math.floor(u/86400),h=Math.floor(u%86400/3600),mi=Math.floor(u%3600/60);
-    $("up").textContent=[dd,h,mi].map(x=>String(x).padStart(2,"0")).join(":")}
+    $("up").textContent=(dd?dd+"D ":"")+(dd||h?h+"H ":"")+mi+"M"}
   const n=s.net||{in_bps:0,out_bps:0};$("nin").textContent=rate(n.in_bps);$("nout").textContent=rate(n.out_bps);
   const h=b.present&&b.health;document.querySelectorAll(".bh").forEach(e=>e.hidden=!h);
   if(h){$("bcyc").textContent=h.cycle_count??"--";$("bcond").textContent=h.condition??"--";$("bcap").textContent=h.max_capacity_pct==null?"--":h.max_capacity_pct+"%"}
